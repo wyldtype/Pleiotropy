@@ -57,3 +57,8 @@ rsconnect/
 
 # data files
 *.csv
+*.xlsx
+
+# bibliography files
+*.bib
+*.rtf
