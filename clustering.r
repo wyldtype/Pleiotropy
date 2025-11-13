@@ -503,16 +503,23 @@ clustdf$label <- map(clustdf$label,
                      }) |> unlist()
 table(clustdf$label) # after merging
 
-# recalculate MEs
-MEs <- moduleEigengenes(t(smooth_full[,-1]), colors = clustdf$label)
+# recalculate MEs on un-smoothed counts
+MEs <- moduleEigengenes(t(counts[,-1]), colors = clustdf$label)
 plotModuleExpressionShapes(MEs, .MEs_or_AvgExpr = "AvgExpr") # postmerge
 
+# adding robust column and checking if any clusters are over-represented in robust fraction
 clustdf$robust <- clustdf$gene_name %in% robust_cluster_genes
-table(clustdf$robust, clustdf$label)
+table(clustdf$robust, clustdf$label) # 3, 5, 9 are heavily under-repsrented
+
+# MEs on just robust genes
+MEs_robust <- moduleEigengenes(t(counts[counts$gene_name %in% robust_cluster_genes,-1]), 
+                        colors = clustdf$label[clustdf$robust])
+plotModuleExpressionShapes(MEs_robust, .MEs_or_AvgExpr = "AvgExpr")
+
 clustdf |> filter(gene_name %in% c(dorsal_idx, cactus_idx, creba_idx))
 
 #### Saving ####
-save(robust_cluster_genes, clustdf, file = "data/Clustering.RData")
+save(robust_cluster_genes, clustdf, counts, file = "data/Clustering.RData")
 
 ########################### Archive ################################
 # #### Exploration: visualizing cluster similarity in a PCA ####
