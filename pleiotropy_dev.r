@@ -42,28 +42,28 @@ clustdf <- left_join(x = clustdf,
                      y = select(williams, FlyBaseID, 
                                 Plei_immuneResponse_embDev,
                                 Plei_allImmune_allDev),
-                     by = c("gene_name"="FlyBaseID"))
+                     by = c("gene_name"="FlyBaseID")) |> 
+  mutate(williams_category = if_else(is.na(Plei_allImmune_allDev),
+                                     true = "Other",
+                                     false = Plei_allImmune_allDev))
 clustdf$robust <- clustdf$gene_name %in% robust_cluster_genes
 
 # plotting cluster membership
-minClusterSize <- 7 # I initially was filtering all clusters with less than 11 genes but turns out Dorsal is in a cluster with 7 genes
+# minClusterSize <- 7 # I initially was filtering all clusters with less than 11 genes but turns out Dorsal is in a cluster with 7 genes
 plei_clusters <- clustdf |> filter(robust & Plei_allImmune_allDev == "Pleiotropic") |> 
   select(label) |> unique()
 plotdf <- clustdf |> filter(robust) |> 
-  select(label, Plei_allImmune_allDev)
+  select(label, williams_category)
 plotdf_counts <- plotdf |> group_by(label) |> 
   summarise(clusterSize = n())
-plotdf <- left_join(plotdf, plotdf_counts, by = "label") |> filter(clusterSize >= minClusterSize)
-plotdf$class <- if_else(is.na(plotdf$Plei_allImmune_allDev),
-                        true = "Non_Developmental_Non_Immune",
-                        false = plotdf$Plei_allImmune_allDev)
-table(plotdf$class) # to get counts
+plotdf <- left_join(plotdf, plotdf_counts, by = "label") #|> filter(clusterSize >= minClusterSize)
+table(plotdf$williams_category) # to get counts
 p <- ggplot(plotdf, aes(x = factor(1), fill = factor(label))) + 
   geom_bar(position = "fill") +
   coord_polar(theta = "y") +
-  facet_wrap(~factor(class,
-                     levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic", "Pleiotropic", "Non_Developmental_Non_Immune"),
-                     labels = c("Developmental (n = 1488)", "Immune (n = 311)", "Pleiotropic (n = 214)", "Other (n = 5943)"))) +
+  facet_wrap(~factor(williams_category,
+                     levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic", "Pleiotropic", "Other"),
+                     labels = c("Developmental (n = 1426)", "Immune (n = 206)", "Pleiotropic (n = 202)", "Other (n = 4394)"))) +
   theme_classic() + 
   theme(axis.text.x = element_blank(),
         axis.text.y = element_blank(),
@@ -95,10 +95,9 @@ avgdf <- avgdf |> group_by(label, sample_id) |>
 # equivalent to taking one mean of all genes in all replicates)
 avgdf$replicate <- getReplicate(avgdf$sample_id)
 avgdf$hour <- getHour(avgdf$sample_id)
-avgdf <- left_join(avgdf, plotdf_counts, by = "label")
-sum(avgdf$clusterSize < minClusterSize) # if this is 0, don't need to filter out small clusters
+# transcripts per million:
 p <- ggplot(avgdf, 
-            aes(x = factor(hour), y = avg_expr)) +
+       aes(x = factor(hour), y = avg_expr)) +
   geom_line(aes(color = factor(label), 
                 group = interaction(label, replicate),
                 linetype = replicate)) +
@@ -106,13 +105,14 @@ p <- ggplot(avgdf,
                  group = interaction(label, replicate)),
              size = 0.25) +
   #scale_color_brewer(palette = "Set1") +
+  scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
   labs(color = "Cluster") +
   theme_classic() +
-  ylab("Average cluster expression (log2)") +
+  ylab("Average cluster expression (tpm)") +
   xlab("Hours after injection") +
   facet_wrap(~factor(label))
-  #theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 p
+# conclusion: no difference in mean cluster expr level here, unlike immune
 pdf("figures/lines_dev.pdf",
     height = 4, width = 7)
 p
@@ -123,21 +123,20 @@ vardf <- counts |> select(gene_name)
 vardf$mean_expr <- apply(as.matrix(counts[,-1]), 1, FUN = mean)
 vardf$sd_expr <- apply(as.matrix(counts[,-1]), 1, FUN = sd)
 vardf$cv <- vardf$sd_expr/vardf$mean_expr
-plotdf <- clustdf |> left_join(vardf, by = "gene_name") |> 
-  filter(!is.na(Plei_allImmune_allDev))
-plot_counts <- plotdf |> group_by(robust, Plei_allImmune_allDev) |> 
+plotdf <- clustdf |> left_join(vardf, by = "gene_name")
+plot_counts <- plotdf |> group_by(robust, williams_category) |> 
   summarise(n = n())
 p <- ggplot(plotdf, aes(y = cv, x = robust)) +
   geom_boxplot(aes(fill = robust)) +
   stat_compare_means(method = "t.test") +
-  facet_wrap(~Plei_allImmune_allDev) +
+  facet_wrap(~williams_category) +
   theme_classic() +
   ylab("coefficient of variation") +
   geom_text(data = plot_counts, aes(label = n, 
                                     x = robust,
                                     y = 3))
 p # robust have more responsive expression
-pdf("figures/boxes_dev.pdf", width = 7, height = 4)
+pdf("figures/boxes_dev.pdf", width = 7, height = 7)
 p
 dev.off()
 
@@ -168,7 +167,7 @@ plei_list <- c(plei_list, rep("", times = length(dev_list) - length(plei_list)))
 metascape <- bind_cols("Developmental_Non_Pleiotropic" = dev_list,
                        "Immune_Non_Pleiotropic" = immune_list,
                        "Pleiotropic" = plei_list)
-write_csv(metascape, file = "data/metascape/metascape_24h.csv", col_names = TRUE)
+write_csv(metascape, file = "data/metascape/metascape_dev.csv", col_names = TRUE)
 
 # repeating with the non-robust genes, which presumably don't have as responsive expression
 outdf <- clustdf |> filter(!robust) |> 
@@ -187,4 +186,4 @@ plei_list <- c(plei_list, rep("", times = length(dev_list) - length(plei_list)))
 metascape <- bind_cols("Developmental_Non_Pleiotropic" = dev_list,
                        "Immune_Non_Pleiotropic" = immune_list,
                        "Pleiotropic" = plei_list)
-write_csv(metascape, file = "data/metascape/metascape_24h_nonRobust.csv", col_names = TRUE)
+write_csv(metascape, file = "data/metascape/metascape_dev_nonRobust.csv", col_names = TRUE)

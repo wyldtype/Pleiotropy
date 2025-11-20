@@ -10,28 +10,26 @@ clustdf <- left_join(x = clustdf,
                      y = select(williams, FlyBaseID, 
                                 Plei_immuneResponse_embDev,
                                 Plei_allImmune_allDev),
-                     by = c("gene_name"="FlyBaseID"))
+                     by = c("gene_name"="FlyBaseID")) |> 
+  mutate(williams_category = if_else(is.na(Plei_allImmune_allDev),
+                                     true = "Other",
+                                     false = Plei_allImmune_allDev))
 clustdf$robust <- clustdf$gene_name %in% robust_cluster_genes
 
 # plotting cluster membership
-minClusterSize <- 7 # I initially was filtering all clusters with less than 11 genes but turns out Dorsal is in a cluster with 7 genes
-plei_clusters <- clustdf |> filter(robust & Plei_allImmune_allDev == "Pleiotropic") |> 
-  select(label) |> unique()
+# minClusterSize <- 7 # I initially was filtering all clusters with less than 11 genes but turns out Dorsal is in a cluster with 7 genes
 plotdf <- clustdf |> filter(robust) |> 
-  select(label, Plei_allImmune_allDev)
+  select(label, williams_category)
 plotdf_counts <- plotdf |> group_by(label) |> 
   summarise(clusterSize = n())
-plotdf <- left_join(plotdf, plotdf_counts, by = "label") |> filter(clusterSize >= minClusterSize)
-plotdf$class <- if_else(is.na(plotdf$Plei_allImmune_allDev),
-                        true = "Non_Developmental_Non_Immune",
-                        false = plotdf$Plei_allImmune_allDev)
-table(plotdf$class) # to get counts
+plotdf <- left_join(plotdf, plotdf_counts, by = "label") #|> filter(clusterSize >= minClusterSize)
+table(plotdf$williams_category) # to get counts
 p <- ggplot(plotdf, aes(x = factor(1), fill = factor(label))) + 
   geom_bar(position = "fill") +
   coord_polar(theta = "y") +
-  facet_wrap(~factor(class,
-                     levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic", "Pleiotropic", "Non_Developmental_Non_Immune"),
-                     labels = c("Developmental (n = 252)", "Immune (n = 110)", "Pleiotropic (n = 33)", "Other (n = 2509)"))) +
+  facet_wrap(~factor(williams_category,
+                     levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic", "Pleiotropic", "Other"),
+                     labels = c("Developmental (n = 730)", "Immune (n = 126)", "Pleiotropic (n = 135)", "Other (n = 2220)"))) +
   theme_classic() + 
   theme(axis.text.x = element_blank(),
         axis.text.y = element_blank(),
@@ -46,7 +44,6 @@ p
 dev.off()
 
 #### Cluster expression shapes ####
-
 # need count data now
 colnames(counts) <- c("gene_name", colnames(counts)[-1])
 avgdf <- clustdf |> filter(gene_name %in% robust_cluster_genes) |> 
@@ -56,14 +53,13 @@ avgdf <- clustdf |> filter(gene_name %in% robust_cluster_genes) |>
                values_to = "expr") |> 
   group_by(label, timepoint) |> 
   summarise(avg_expr = mean(expr))
-avgdf <- left_join(avgdf, plotdf_counts, by = "label") |> 
-  filter(clusterSize >= minClusterSize)
 avgdf$replicate <- if_else(grepl(x = avgdf$timepoint, pattern = "A"),
                            true = "A", false = "B")
 avgdf$timepoint <- parse_number(avgdf$timepoint)
 avgdf$hours <- c(0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[avgdf$timepoint]
-p <- ggplot(avgdf, 
-            aes(x = factor(hours), y = avg_expr)) +
+# transcripts per million:
+ggplot(avgdf, 
+       aes(x = factor(hours), y = avg_expr)) +
   geom_line(aes(color = factor(label), 
                 group = interaction(label, replicate),
                 linetype = replicate)) +
@@ -74,7 +70,45 @@ p <- ggplot(avgdf,
   scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
   labs(color = "Cluster") +
   theme_classic() +
-  ylab("Average cluster expression (log2)") +
+  ylab("Average cluster expression (tpm)") +
+  xlab("Hours after injection") +
+  facet_wrap(~factor(label))
+# conclusion: cluster 5 is way higher expressed (and a quite small cluster)
+# transcripts per million, removing cluster 5:
+ggplot(filter(avgdf, label != 5), 
+       aes(x = factor(hours), y = avg_expr)) +
+  geom_line(aes(color = factor(label), 
+                group = interaction(label, replicate),
+                linetype = replicate)) +
+  geom_point(aes(color = factor(label), 
+                 group = interaction(label, replicate)),
+             size = 0.25) +
+  #scale_color_brewer(palette = "Set1") +
+  scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
+  labs(color = "Cluster") +
+  theme_classic() +
+  ylab("Average cluster expression (tpm)") +
+  xlab("Hours after injection") +
+  facet_wrap(~factor(label))
+# scaled expression:
+scaledf <- avgdf |> group_by(label, replicate) |> 
+  summarise(mean = mean(avg_expr),
+            sd = sd(avg_expr))
+avgdf <- left_join(avgdf, scaledf, by = c("label", "replicate"))
+avgdf$scaled_expr <- (avgdf$avg_expr - avgdf$mean)/avgdf$sd
+p <- ggplot(avgdf, 
+            aes(x = factor(hours), y = scaled_expr)) +
+  geom_line(aes(color = factor(label), 
+                group = interaction(label, replicate),
+                linetype = replicate)) +
+  geom_point(aes(color = factor(label), 
+                 group = interaction(label, replicate)),
+             size = 0.25) +
+  #scale_color_brewer(palette = "Set1") +
+  scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
+  labs(color = "Cluster") +
+  theme_classic() +
+  ylab("Average cluster expression\n(centered and scaled)") +
   xlab("Hours after injection") +
   facet_wrap(~factor(label))
   #theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
@@ -89,23 +123,22 @@ vardf <- counts |> select(gene_name)
 vardf$mean_expr <- apply(as.matrix(counts[,-1]), 1, FUN = mean)
 vardf$sd_expr <- apply(as.matrix(counts[,-1]), 1, FUN = sd)
 vardf$cv <- vardf$sd_expr/vardf$mean_expr
-plotdf <- clustdf |> left_join(vardf, by = "gene_name") |> 
-  filter(!is.na(Plei_allImmune_allDev))
-plot_counts <- plotdf |> group_by(robust, Plei_allImmune_allDev) |> 
+plotdf <- clustdf |> left_join(vardf, by = "gene_name")
+plot_counts <- plotdf |> group_by(robust, williams_category) |> 
   summarise(n = n())
-plotdf |> filter(cv > 0.9) # Turandot E, an outlier we won't include in the plot, but good to know about
+plotdf |> filter(cv >= 0.9) # Turandot E, an outlier we won't include in the plot, but good to know about
 p <- ggplot(filter(plotdf, cv < 0.9), aes(y = cv, x = robust)) +
   geom_boxplot(aes(fill = robust)) +
   stat_compare_means(method = "t.test", label.y = 0.6) +
-  facet_wrap(~Plei_allImmune_allDev) +
+  facet_wrap(~williams_category) +
   theme_classic() +
   ylab("coefficient of variation") +
   geom_text(data = plot_counts, aes(label = n, 
                                     x = robust,
                                     y = 0.5)) +
-  ylim(c(0, 0.65))
-p # true for immune, but slight apples to oranges r.n. because these counts are log2(tpm) and the dev ones are tpm
-pdf("figures/boxes.pdf", width = 7, height = 4)
+  ylim(c(0, 0.9))
+p # yes, moderately, mainly for immune
+pdf("figures/boxes.pdf", width = 7, height = 7)
 p
 dev.off()
 
