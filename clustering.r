@@ -2,8 +2,7 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr",
          "stringr", "WGCNA", "cluster", "DESeq2", "circlize", "stats"), FUN = require,
        character.only = TRUE)
 
-counts <- read_csv("data/normalized_counts_log_filt.csv")
-colnames(counts) <- c("gene_name", colnames(counts)[-1])
+load("data/ImmuneCounts.RData")
 
 #### Sample PCA to look for outliers ####
 pca <- prcomp(cor(counts[,-1])) # TODO when you care to: eigen() and plotting vectors didn't work the same and I don't know what the difference between eigen and prcomp is (scaling and rotation I think)
@@ -37,12 +36,11 @@ setdiff(parse_number(colnamesB), parse_number(colnamesA))
 # conclusion: B is missing timepoint 4
 
 # removing timepoint 6 (outlier), 4 (missing)
-# counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A"))]
+counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A"))]
 
 # ..and every timepoint after 24 hours (>12)
-counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A",
-                                              "13A", "14A", "15A", "16A", "17A", "18A", "19A", "20A", "21A",
-                                              "13B", "14B", "15B", "16B", "17B", "18B", "19B", "20B", "21B"))]
+counts24 <- counts[,setdiff(colnames(counts), c("13A", "14A", "15A", "16A", "17A", "18A", "19A", "20A", "21A",
+                                                "13B", "14B", "15B", "16B", "17B", "18B", "19B", "20B", "21B"))]
 
 #### QC: Dorsal/Cactus/CrebA ####
 # Their expression is very different between rep A and B
@@ -51,10 +49,10 @@ counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A",
 cactus_idx <- "FBgn0000250" # Cactus
 dorsal_idx <- "FBgn0260632" # Dorsal
 creba_idx <- "FBgn0004396" # CrebA
-plotdf <- tibble(sample = colnames(counts)[-1],
-                 cactus = as.numeric(counts[counts$gene_name == cactus_idx, -1]),
-                 dorsal = as.numeric(counts[counts$gene_name == dorsal_idx, -1]),
-                 creba = as.numeric(counts[counts$gene_name == creba_idx, -1])) |> 
+plotdf <- tibble(sample = colnames(counts24)[-1],
+                 cactus = as.numeric(counts24[counts24$gene_name == cactus_idx, -1]),
+                 dorsal = as.numeric(counts24[counts24$gene_name == dorsal_idx, -1]),
+                 creba = as.numeric(counts24[counts24$gene_name == creba_idx, -1])) |> 
   pivot_longer(cols = c("cactus", "dorsal", "creba"), names_to = "gene", values_to = "expr")
 plotdf$timepoint <- parse_number(plotdf$sample)
 plotdf$hours <- c(0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[plotdf$timepoint]
@@ -69,7 +67,7 @@ ggplot(plotdf, aes(x = factor(hours), y = expr)) +
   scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
   labs(color = "Cluster") +
   theme_classic() +
-  ylab("Expression (log2)") +
+  ylab("Expression (tpm)") +
   xlab("Hours after injection") +
   facet_wrap(~factor(gene))
 # Rep B is a little higher, especially at later timepoints
@@ -103,23 +101,23 @@ getMovingAverage <- function(.cts) {
   return(cts_movavg)
 }
 # tests for getMovingAverage
-# gene_idx <- sample(counts$gene_name, 1)
+# gene_idx <- sample(counts24$gene_name, 1)
 gene_idx <- creba_idx
-test_countsA <- counts[counts$gene_name == gene_idx, 
-                       grepl("A", colnames(counts)), 
+test_counts24A <- counts24[counts24$gene_name == gene_idx, 
+                       grepl("A", colnames(counts24)), 
                        drop = FALSE]
-test_countsB <- counts[counts$gene_name == gene_idx, 
-                       grepl("B", colnames(counts)), 
+test_counts24B <- counts24[counts24$gene_name == gene_idx, 
+                       grepl("B", colnames(counts24)), 
                        drop = FALSE]
-test_movavgA <- getMovingAverage(test_countsA)
-test_movavgB <- getMovingAverage(test_countsB)
-plotdf <- bind_rows(tibble(before = as.numeric(test_countsA),
+test_movavgA <- getMovingAverage(test_counts24A)
+test_movavgB <- getMovingAverage(test_counts24B)
+plotdf <- bind_rows(tibble(before = as.numeric(test_counts24A),
                            after = as.numeric(test_movavgA),
-                           timepoint = parse_number(colnames(test_countsA)),
+                           timepoint = parse_number(colnames(test_counts24A)),
                            replicate = "A"),
-                    tibble(before = as.numeric(test_countsB),
+                    tibble(before = as.numeric(test_counts24B),
                            after = as.numeric(test_movavgB),
-                           timepoint = parse_number(colnames(test_countsB)),
+                           timepoint = parse_number(colnames(test_counts24B)),
                            replicate = "B")) |> 
   pivot_longer(cols = c("before", "after"),
                names_to = "status", values_to = "expr")
@@ -160,11 +158,11 @@ smoothCountMatrix <- function(.cts, .df = deg_free) {
 
 # tests for smoothCountMatrix
 gene_idx <- creba_idx
-test_countsA <- counts[counts$gene_name == gene_idx, 
-                       grepl("A", colnames(counts)), 
+test_countsA <- counts24[counts24$gene_name == gene_idx, 
+                       grepl("A", colnames(counts24)), 
                        drop = FALSE]
-test_countsB <- counts[counts$gene_name == gene_idx, 
-                       grepl("B", colnames(counts)), 
+test_countsB <- counts24[counts24$gene_name == gene_idx, 
+                       grepl("B", colnames(counts24)), 
                        drop = FALSE]
 test_smoothA <- smoothCountMatrix(.cts = test_countsA)
 test_smoothB <- smoothCountMatrix(.cts = test_countsB)
@@ -183,13 +181,13 @@ ggplot(plotdf, aes(x = timepoint, y = expr)) +
                 color = status, linetype = replicate))
 
 # Smoothing
-colnamesA <- grep("A", colnames(counts), value = TRUE)
-colnamesB <- grep("B", colnames(counts), value = TRUE)
+colnamesA <- grep("A", colnames(counts24), value = TRUE)
+colnamesB <- grep("B", colnames(counts24), value = TRUE)
 setequal(parse_number(colnamesA), parse_number(colnamesB)) # should be equal
 
 # A-B Partition
-countsA <- counts[, c("gene_name", colnamesA)]
-countsB <- counts[, c("gene_name", colnamesB)]
+countsA <- counts24[, c("gene_name", colnamesA)]
+countsB <- counts24[, c("gene_name", colnamesB)]
 
 # smoothing
 smoothMatA <- smoothCountMatrix(.cts = countsA[,-1])
@@ -212,8 +210,16 @@ corCluster <- function(.cts, .tree_too = FALSE) {
     cat("NA genes in counts matrix, returning counts matrix only\n")
     return(.cts)
   }
-  # clustering
+  # checking for 0-count genes
   cts_mat <- .cts[,-1] |> as.matrix()
+  zero_idxs <- which(rowSums(cts_mat) == 0)
+  if (length(zero_idxs) > 0) {
+    cat(length(zero_idxs), "genes with all 0 counts, removing them!\n")
+    zero_genes <- .cts[zero_idxs,1]
+    cts_mat <- cts_mat[-zero_idxs,]
+    .cts <- .cts[-zero_idxs,]
+  }
+  # clustering
   rownames(cts_mat) <- unlist(.cts[,1]) |> as.character()
   cor_mat <- cts_mat |> t() |> cor(use = "pairwise.complete.obs")
   dist_mat <- as.dist(-cor_mat)
@@ -234,20 +240,16 @@ corCluster <- function(.cts, .tree_too = FALSE) {
   }
 }
 
-# testing on the whole thing to optimize cutting height
-clusters <- corCluster(.cts = counts, .tree_too = TRUE)
-plot(clusters$tree, labels = FALSE) # looks like clustering! Definitely more than 5 clusters
-plotDendroAndColors(dendro = clusters$tree, colors = clusters$df$label, dendroLabels = FALSE)
-# smoothened:
-clusters <- corCluster(.cts = smooth_full, .tree_too = TRUE)
-plotDendroAndColors(dendro = clusters$tree, colors = clusters$df$label, dendroLabels = FALSE)
+# tests for corCluster:
+test_clusters <- corCluster(.cts = smooth_full[sample(c(1:nrow(counts)), size = 1000),], .tree_too = TRUE)
+plotDendroAndColors(dendro = test_clusters$tree, colors = test_clusters$df$label, dendroLabels = FALSE)
 
 #### QC: A-B split ####
 # clustering A and B replicates separately to decide which genes have
 # robust clustering (which are presumably the ones that have dynamic and
 # reproducible expression responses during the Imd challenge)
 clustA <- corCluster(.cts = smoothA, .tree_too = TRUE)
-plotDendroAndColors(dendro = clustA$tree, colors = clustA$df$label, dendroLabels = FALSE)
+plotDendroAndColors(dendro = clustA$tree, colors = clustA$df$label[clustA$df$label != 0], dendroLabels = FALSE)
 clustB <- corCluster(.cts = smoothB, .tree_too = TRUE)
 plotDendroAndColors(dendro = clustB$tree, colors = clustB$df$label, dendroLabels = FALSE)
 # Use matchLabels to make them as similar as possible
@@ -320,6 +322,8 @@ ggarrange(p_meB, p_avgB, nrow = 1, ncol = 2, legend = "none")
 # conclusion: ME and AvgExpr are very simlar. Interesting that the first principal component can be very related to the column average
 # A vs B clusters by avgExpr:
 ggarrange(p_avgA, p_avgB, nrow = 1, ncol = 2, legend = "none")
+clustA$df |> filter(gene_name %in% c(dorsal_idx, cactus_idx, creba_idx))
+clustB$df |> filter(gene_name %in% c(dorsal_idx, cactus_idx, creba_idx))
 # conclusion: fewer clusters in B, but they are similar shapes and very smooth compared to non-smooth
 
 ### PCA-based merging
@@ -372,12 +376,15 @@ plotPCs <- function(.PCA, .xPC = 1, .yPC = 2) {
 }
 plotPCs(pca_AB, .xPC = 1, .yPC = 2)
 plotPCs(pca_AB, .xPC = 2, .yPC = 3) 
+plotPCs(pca_AB, .xPC = 3, .yPC = 4) 
+
 # Seem to be some decent grouping. With different clusters grouping in different dimensions
 
 ### Heatmap of Euclidean distance in the first X PCs, weighted by variance explained
 # Helper function to get distance between two clusters
-getDist <- function(.clust1, .clust2, .pca, .nPCs = nPCs, .weighted = TRUE) {
-  dist_vec <- map(c(1:.nPCs), \(comp) {
+getDist <- function(.clust1, .clust2, .pca, .nPCs = nPCs,
+                    .startPC = 1, .weighted = TRUE) {
+  dist_vec <- map(c(.startPC:(.startPC+.nPCs)), \(comp) {
     prop_var <- 1
     if (.weighted == TRUE) {
       prop_var <- .pca$sdev[comp]/sum(.pca$sdev)
@@ -388,9 +395,12 @@ getDist <- function(.clust1, .clust2, .pca, .nPCs = nPCs, .weighted = TRUE) {
   return(sqrt(sum(dist_vec)))
 }
 # tests for getDist
-getDist(.clust1 = "AE1_A", .clust2 = "AE1_A", .pca = pca_AB) # should be 0
-getDist(.clust1 = "AE8_A", .clust2 = "AE10_B", .pca = pca_AB) # should be small
-getDist(.clust1 = "AE3_A", .clust2 = "AE2_A", .pca = pca_AB) # should be large
+nPCs <- 2
+getDist(.clust1 = "AE1_A", .clust2 = "AE1_A", .pca = pca_AB, .nPCs = nPCs) # should be 0
+getDist(.clust1 = "AE6_A", .clust2 = "AE10_B", .pca = pca_AB, .nPCs = nPCs) # should be small
+getDist(.clust1 = "AE6_A", .clust2 = "AE7_B", .pca = pca_AB, .nPCs = nPCs) # should be small
+getDist(.clust1 = "AE6_A", .clust2 = "AE7_B", .pca = pca_AB, .nPCs = 2, .startPC = 3) # should be small
+getDist(.clust1 = "AE18_A", .clust2 = "AE5_B", .pca = pca_AB, .nPCs = nPCs) # should be large
 
 # gets all pairwise distances in a PCA
 getDistMat <- function(.PCA, .nPCs) {
@@ -408,6 +418,7 @@ getDistMat <- function(.PCA, .nPCs) {
 }
 
 # Heatmap
+nPCs
 plotmat <- getDistMat(pca_AB, .nPCs = nPCs)
 rownames(plotmat) <- rownames(pca_AB$x)
 colnames(plotmat) <- rownames(pca_AB$x)
@@ -420,29 +431,75 @@ ggarrange(p_avgA, p_avgB, nrow = 1, ncol = 2, legend = "none")
 par(mfrow = c(1,1))
 tree <- hclust(dist(plotmat), method = "complete") # same tree in heatmap
 plot(tree)
-cutHeight <- 5
+cutHeight <- 6
 abline(h = cutHeight, col = "red")
 new_cluster_lookup <- cutree(tree, h = cutHeight)
 new_cluster_lookup
 # grouping
 # A
-clustdfA <- clustA$df
-table(clustdfA$label) # before merging
-clustdfA$label <- map(clustdfA$label,
-                      \(x) {
-                        new_cluster_lookup[paste0("AE", x, "_A")] |> as.numeric() 
-                      }) |> unlist()
-table(clustdfA$label) # after merging
+table(clustA$df$label) # before merging
+new_labels_A_PCA <- map(clustA$df$label,
+                        \(x) {
+                          new_cluster_lookup[paste0("AE", x, "_A")] |> as.numeric() 
+                        }) |> unlist()
+table(new_labels_A_PCA) # after merging
 # B
+table(clustB$df$label) # before merging
+new_labels_B_PCA <- map(clustB$df$label,
+                        \(x) {
+                          new_cluster_lookup[paste0("AE", x, "_B")] |> as.numeric() 
+                        }) |> unlist()
+table(new_labels_B_PCA) # after merging
+
+new_labels_A_PCA[counts$gene_name %in% c(cactus_idx, creba_idx, dorsal_idx)]
+new_labels_B_PCA[counts$gene_name %in% c(cactus_idx, creba_idx, dorsal_idx)]
+
+## Merging by WGCNA::mergeCloseModules
+new_labels_list_A <- mergeCloseModules(exprData = t(as.matrix(smoothA[,-1])),
+                                       colors = clustA$df$label,
+                                       cutHeight = 0.5)
+new_labels_A_WGCNA <- new_labels_list_A$colors
+new_labels_list_B <- mergeCloseModules(exprData = t(as.matrix(smoothB[,-1])),
+                                       colors = clustB$df$label,
+                                       cutHeight = 0.5)
+new_labels_B_WGCNA <- new_labels_list_B$colors
+# matching labels, b/c the same number is not necessarily the same shape
+new_labels_B_WGCNA <- matchLabels(source = new_labels_B_WGCNA, 
+                                  reference = new_labels_A_WGCNA)
+new_labels_A_WGCNA[counts$gene_name %in% c(cactus_idx, creba_idx, dorsal_idx)]
+new_labels_B_WGCNA[counts$gene_name %in% c(cactus_idx, creba_idx, dorsal_idx)]
+
+## Comparing expression shapes
+newMEs_A_PCA <- moduleEigengenes(t(smoothA[,-1]),
+                                 colors = new_labels_A_PCA)
+newMEs_B_PCA <- moduleEigengenes(t(smoothB[,-1]),
+                                 colors = new_labels_B_PCA)
+newMEs_A_WGCNA <- moduleEigengenes(t(smoothA[,-1]),
+                                   colors = new_labels_A_WGCNA)
+newMEs_B_WGCNA <- moduleEigengenes(t(smoothB[,-1]),
+                                   colors = new_labels_B_WGCNA)
+p_A_PCA <- plotModuleExpressionShapes(.ME_object = newMEs_A_PCA, .MEs_or_AvgExpr = "AvgExpr")
+p_B_PCA <- plotModuleExpressionShapes(.ME_object = newMEs_B_PCA, .MEs_or_AvgExpr = "AvgExpr")
+p_A_WGCNA <- plotModuleExpressionShapes(.ME_object = newMEs_A_WGCNA, .MEs_or_AvgExpr = "AvgExpr")
+p_B_WGCNA <- plotModuleExpressionShapes(.ME_object = newMEs_B_WGCNA, .MEs_or_AvgExpr = "AvgExpr")
+# A PCA vs A WGCNA
+ggarrange(p_A_PCA, p_A_WGCNA, p_B_PCA, p_B_WGCNA,
+          nrow = 2, ncol = 2, legend = "none")
+# Are the same genes robust in both definitions?
+sum((new_labels_A_PCA == new_labels_B_PCA) &
+      (new_labels_A_WGCNA == new_labels_B_WGCNA)) # both robust
+sum((new_labels_A_PCA == new_labels_B_PCA) |
+      (new_labels_A_WGCNA == new_labels_B_WGCNA)) # total robust
+# about half and half overlap
+
+## Assigning new labels
+clustdfA <- clustA$df
 clustdfB <- clustB$df
-table(clustdfB$label) # before merging
-clustdfB$label <- map(clustdfB$label,
-                      \(x) {
-                        new_cluster_lookup[paste0("AE", x, "_B")] |> as.numeric() 
-                      }) |> unlist()
-table(clustdfB$label) # after merging
 # we assume all genes are in the same order in both splits:
 sum(clustdfA$gene_name == clustdfB$gene_name)/nrow(clustdfA) # should be 1
+# updating labels
+clustdfA$label <- new_labels_A_WGCNA
+clustdfB$label <- new_labels_B_WGCNA
 sum(clustdfA$label == clustdfB$label)/nrow(clustdfA) # our number of robust clusterers
 # combining
 clustdfAB <- select(clustdfA, gene_name)
@@ -459,26 +516,38 @@ clustdfAB$label <- map2(clustdfA$label, clustdfB$label,
 clustdfAB$robust <- map(clustdfAB$label, 
                       .f = \(x) !grepl("_", x)) |> 
   unlist()
-sum(clustdfAB$robust)/nrow(clustdfAB) # 31%
+sum(clustdfAB$robust)/nrow(clustdfAB) # % robust
 clustdfAB |> filter(gene_name %in% c(dorsal_idx, cactus_idx, creba_idx))
 robust_cluster_genes <- clustdfAB |> filter(robust) |> select(gene_name) |> pull()
 
 #### Clustering full data ####
-# (we did this part above)
 clusters <- corCluster(.cts = smooth_full, .tree_too = TRUE)
 plotDendroAndColors(dendro = clusters$tree, colors = clusters$df$label, dendroLabels = FALSE)
-
-### merging clusters by PCA
+# initial shapes:
 MEs <- moduleEigengenes(expr = t(smooth_full[,-1]), colors = clusters$df$label)
 plotModuleExpressionShapes(MEs, .MEs_or_AvgExpr = "AvgExpr") # premerge
 
+### merging clusters using WGCNA::mergeCloseModules 
+new_label_list <- mergeCloseModules(exprData = as.matrix(t(smooth_full[,-1])),
+                                    colors = clusters$df$label,
+                                    cutHeight = 0.5)
+length(table(new_label_list$colors))
+new_labels_WGCNA <- new_label_list$colors
+newMEs_WGCNA <- moduleEigengenes(expr = t(counts24[,-1]), 
+                                 colors = new_labels_WGCNA)
+
+plotModuleExpressionShapes(newMEs_WGCNA, .MEs_or_AvgExpr = "AvgExpr")
+
+### merging clusters by PCA
 pca <- getPCA(MEs, .MEs_or_AvgExpr = "AvgExpr")
 plotPCAScree(pca) # 3 PCs
-nPCs <- 3
+nPCs <- 2
 plotPCs(pca, .xPC = 1, .yPC = 2)
 plotPCs(pca, .xPC = 2, .yPC = 3)
-getDist("AE4", "AE18", .pca = pca, .nPCs = nPCs, .weighted = TRUE)
-getDist("AE2", "AE17", .pca = pca, .nPCs = nPCs, .weighted = TRUE)
+# pick a pair that looks close:
+getDist("AE4", "AE13", .pca = pca, .nPCs = nPCs, .weighted = TRUE)
+# pick a pair that looks far:
+getDist("AE4", "AE5", .pca = pca, .nPCs = nPCs, .weighted = TRUE)
 
 plotmat <- getDistMat(pca, .nPCs = nPCs)
 rownames(plotmat) <- rownames(pca$x)
@@ -494,32 +563,48 @@ abline(h = cutHeight, col = "red")
 new_cluster_lookup <- cutree(tree, h = cutHeight)
 new_cluster_lookup
 # grouping
-# A
-clustdf <- clusters$df
-table(clustdf$label) # before merging
-clustdf$label <- map(clustdf$label,
-                     \(x) {
-                       new_cluster_lookup[paste0("AE", x)] |> as.numeric() 
-                     }) |> unlist()
-table(clustdf$label) # after merging
+table(clusters$df$label) # before merging
+new_labels_PCA <- map(clusters$df$label,
+                      \(x) {
+                        new_cluster_lookup[paste0("AE", x)] |> as.numeric() 
+                      }) |> unlist()
+table(new_labels_PCA) # after merging
 
-# recalculate MEs on un-smoothed counts
-MEs <- moduleEigengenes(t(counts[,-1]), colors = clustdf$label)
-plotModuleExpressionShapes(MEs, .MEs_or_AvgExpr = "AvgExpr") # postmerge
+# recalculate MEs
+newMEs_PCA <- moduleEigengenes(t(counts24[,-1]), colors = new_labels_PCA)
+
+## comparing merge results
+newMEs <- moduleEigengenes(t(counts24[,-1]), colors = clusters$df$label)
+# pre-merge:
+plotModuleExpressionShapes(newMEs, .MEs_or_AvgExpr = "AvgExpr") # postmerge
+# WGCNA::mergeCloseModules:
+plotModuleExpressionShapes(newMEs_WGCNA, .MEs_or_AvgExpr = "AvgExpr") # postmerge
+# PCA-distance merge:
+plotModuleExpressionShapes(newMEs_PCA, .MEs_or_AvgExpr = "AvgExpr") # postmerge
+# conclusion: both seem to work well and come up with similar shapes
+
+## setting new labels
+clustdf <- clusters$df
+table(dense_rank(new_labels_WGCNA)) # WGCNA groups modules without necessarily keeping the values 1,2,3,etc.
+clustdf$label <- new_labels_WGCNA |> dense_rank()
 
 # adding robust column and checking if any clusters are over-represented in robust fraction
 clustdf$robust <- clustdf$gene_name %in% robust_cluster_genes
-table(clustdf$robust, clustdf$label) # 3, 5, 9 are heavily under-repsrented
+table(clustdf$robust, clustdf$label) # 1 is heavily under-represented, 7 also pretty under-represented
 
-# MEs on just robust genes
-MEs_robust <- moduleEigengenes(t(counts[counts$gene_name %in% robust_cluster_genes,-1]), 
+# final MEs on all genes
+MEs <- moduleEigengenes(t(counts24[,-1]), 
+                               colors = clustdf$label)
+plotModuleExpressionShapes(MEs, .MEs_or_AvgExpr = "AvgExpr")
+# final MEs on just robust genes
+MEs_robust <- moduleEigengenes(t(counts24[counts24$gene_name %in% robust_cluster_genes,-1]), 
                         colors = clustdf$label[clustdf$robust])
-plotModuleExpressionShapes(MEs_robust, .MEs_or_AvgExpr = "AvgExpr")
-
+plotModuleExpressionShapes(MEs_robust, .MEs_or_AvgExpr = "AvgExpr") # not very different
+# checking our favorite genes
 clustdf |> filter(gene_name %in% c(dorsal_idx, cactus_idx, creba_idx))
 
 #### Saving ####
-save(robust_cluster_genes, clustdf, counts, file = "data/Clustering.RData")
+save(robust_cluster_genes, clustdf, counts, file = "data/ClusteringImmune.RData")
 
 ########################### Archive ################################
 # #### Exploration: visualizing cluster similarity in a PCA ####

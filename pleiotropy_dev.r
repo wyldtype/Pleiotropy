@@ -1,8 +1,40 @@
 sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr", "stringr"), FUN = require,
        character.only = TRUE)
-load("data/ClusteringImmune.RData")
+load("data/ClusteringDev.RData")
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
                       sheet = 2, na = "NA") 
+
+#### Parsing sample metadata ####
+getHour <- function(.name, .info = infodf) {
+  if (all(grepl("^[0-9+]*$", .name)))
+    return(as.numeric(.name))
+  out_vec <- purrr::map(.name, \(nm) {
+    .info |> filter(colname == nm) |> 
+      select(hour) |> pull()
+  }) |> unlist()
+  return(out_vec)
+}
+# test for getHour
+colnames(counts)[1:10]
+getHour(colnames(counts)[1])
+getHour(colnames(counts)[10])
+getHour(colnames(counts)[2:9])
+getHour(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
+getHour(c("0", "3", "4"))
+
+getReplicate <- function(.name, .info = infodf) {
+  out_vec <- purrr::map(.name, \(nm) {
+    .info |> filter(colname == nm) |> 
+      select(replicate) |> pull()
+  }) |> unlist()
+  return(out_vec)
+}
+# test for getReplicate
+colnames(counts)[1:10]
+getReplicate(colnames(counts)[1])
+getReplicate(colnames(counts)[9])
+getReplicate(colnames(counts)[2:9])
+getReplicate(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
 
 #### Pie charts of cluster membership for Immune, Developmental, and Pleiotropic genes ####
 
@@ -31,7 +63,7 @@ p <- ggplot(plotdf, aes(x = factor(1), fill = factor(label))) +
   coord_polar(theta = "y") +
   facet_wrap(~factor(class,
                      levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic", "Pleiotropic", "Non_Developmental_Non_Immune"),
-                     labels = c("Developmental (n = 252)", "Immune (n = 110)", "Pleiotropic (n = 33)", "Other (n = 2509)"))) +
+                     labels = c("Developmental (n = 1488)", "Immune (n = 311)", "Pleiotropic (n = 214)", "Other (n = 5943)"))) +
   theme_classic() + 
   theme(axis.text.x = element_blank(),
         axis.text.y = element_blank(),
@@ -40,30 +72,33 @@ p <- ggplot(plotdf, aes(x = factor(1), fill = factor(label))) +
   scale_fill_brewer(palette = "Set1") +
   labs(fill = "Cluster")
 p
-pdf(file = "figures/pies.pdf",
+pdf(file = "figures/pies_dev.pdf",
     width = 5, height = 5)
 p
 dev.off()
 
 #### Cluster expression shapes ####
 
-# need count data now
-colnames(counts) <- c("gene_name", colnames(counts)[-1])
+# pairing cluster assignments to expression data
 avgdf <- clustdf |> filter(gene_name %in% robust_cluster_genes) |> 
   left_join(counts, by = "gene_name") |> 
   pivot_longer(cols = colnames(counts)[-1],
-               names_to = "timepoint",
-               values_to = "expr") |> 
-  group_by(label, timepoint) |> 
+               names_to = "sample_id",
+               values_to = "expr")
+# taking average expression of each cluster in each sample
+avgdf <- avgdf |> group_by(label, sample_id) |> 
   summarise(avg_expr = mean(expr))
-avgdf <- left_join(avgdf, plotdf_counts, by = "label") |> 
-  filter(clusterSize >= minClusterSize)
-avgdf$replicate <- if_else(grepl(x = avgdf$timepoint, pattern = "A"),
-                           true = "A", false = "B")
-avgdf$timepoint <- parse_number(avgdf$timepoint)
-avgdf$hours <- c(0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[avgdf$timepoint]
+# taking average of each cluster among replicates of the same hour
+# Taking sample means before the hour mean to speed up computation 
+# (each sample mean came from the same number of genes, 
+# so taking the mean of the 3-4 sample means is
+# equivalent to taking one mean of all genes in all replicates)
+avgdf$replicate <- getReplicate(avgdf$sample_id)
+avgdf$hour <- getHour(avgdf$sample_id)
+avgdf <- left_join(avgdf, plotdf_counts, by = "label")
+sum(avgdf$clusterSize < minClusterSize) # if this is 0, don't need to filter out small clusters
 p <- ggplot(avgdf, 
-            aes(x = factor(hours), y = avg_expr)) +
+            aes(x = factor(hour), y = avg_expr)) +
   geom_line(aes(color = factor(label), 
                 group = interaction(label, replicate),
                 linetype = replicate)) +
@@ -71,7 +106,6 @@ p <- ggplot(avgdf,
                  group = interaction(label, replicate)),
              size = 0.25) +
   #scale_color_brewer(palette = "Set1") +
-  scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
   labs(color = "Cluster") +
   theme_classic() +
   ylab("Average cluster expression (log2)") +
@@ -79,7 +113,7 @@ p <- ggplot(avgdf,
   facet_wrap(~factor(label))
   #theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 p
-pdf("figures/lines.pdf",
+pdf("figures/lines_dev.pdf",
     height = 4, width = 7)
 p
 dev.off()
@@ -93,19 +127,17 @@ plotdf <- clustdf |> left_join(vardf, by = "gene_name") |>
   filter(!is.na(Plei_allImmune_allDev))
 plot_counts <- plotdf |> group_by(robust, Plei_allImmune_allDev) |> 
   summarise(n = n())
-plotdf |> filter(cv > 0.9) # Turandot E, an outlier we won't include in the plot, but good to know about
-p <- ggplot(filter(plotdf, cv < 0.9), aes(y = cv, x = robust)) +
+p <- ggplot(plotdf, aes(y = cv, x = robust)) +
   geom_boxplot(aes(fill = robust)) +
-  stat_compare_means(method = "t.test", label.y = 0.6) +
+  stat_compare_means(method = "t.test") +
   facet_wrap(~Plei_allImmune_allDev) +
   theme_classic() +
   ylab("coefficient of variation") +
   geom_text(data = plot_counts, aes(label = n, 
                                     x = robust,
-                                    y = 0.5)) +
-  ylim(c(0, 0.65))
-p # true for immune, but slight apples to oranges r.n. because these counts are log2(tpm) and the dev ones are tpm
-pdf("figures/boxes.pdf", width = 7, height = 4)
+                                    y = 3))
+p # robust have more responsive expression
+pdf("figures/boxes_dev.pdf", width = 7, height = 4)
 p
 dev.off()
 
@@ -115,7 +147,7 @@ outdf <- clustdf |> filter(robust) |>
   select(gene_name, label, Plei_allImmune_allDev) |> 
   drop_na() |> 
   arrange(Plei_allImmune_allDev, label)
-write_csv(outdf, file = "data/clusters_24h_BLANK.csv", col_names = TRUE)
+write_csv(outdf, file = "data/clusters_dev_BLANK.csv", col_names = TRUE)
 
 # writing table where columns are pleiotropy category,
 # for metascape's multiple gene list feature
