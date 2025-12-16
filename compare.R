@@ -126,7 +126,19 @@ genedf <- clustdf |> pivot_wider(id_cols = c("gene_name", "williams_category"),
 # How many are pleiotropic?
 genedf |> filter(robust_immune & robust_dev) |> 
   select(williams_category) |> table()
+plotdf <- filter(genedf, robust_immune & robust_dev)
+plotdf$cat <- factor(plotdf$williams_category,
+                     labels = c("Developmental", "Other", "Immune", "Pleiotropic"),
+                     levels = c("Developmental_Non_Pleiotropic", "Other", "Immune_Non_Pleiotropic", "Pleiotropic"))
+ggplot(plotdf, 
+       aes(x = cat)) +
+  geom_bar(aes(fill = cat)) +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.title = element_blank()) +
+  xlab("") + ylab("Number of genes")
 
+#### Visualizing gene expression ####
 # getting list of pleiotropic immune/dev responsive genes:
 plei_genes <- genedf |> filter(robust_immune & robust_dev) |> 
   filter(williams_category == "Pleiotropic") |> 
@@ -163,6 +175,13 @@ mmp1_idx <- "FBgn0035049"
 # ones that are not variable in one dataset (controls to reference for CV check)
 krotzkopf_idx <- "FBgn0001311"
 ras85_idx <- "FBgn0003205"
+# 3-1 vs 4-1 genes
+jra_idx <- "FBgn0001291" # Jra
+bom1 <- "FBgn0034329" # bomanin short 1
+bom2 <- "FBgn0025583" # bomanin short 2
+pepLF <- "FBgn0035977" # Peptidoglycan recognition protein LF
+pepSD <- "FBgn0035806" # Peptidoglycan recognition protein SD
+
 
 plotDevImmuneExpr(.gene_idxs = c(krotzkopf_idx, ras85_idx),
                   .title = "Not Responsive",
@@ -176,6 +195,17 @@ plotDevImmuneExpr(.gene_idxs = c(jra_idx, slipper_idx, hemipterous_idx),
 plotDevImmuneExpr(.gene_idxs = c(cactus_idx, dorsal_idx),
                   .gene_names = c("Cactus", "Dorsal"),
                   .title = "Toll Pathway")
+
+plotDevImmuneExpr(.gene_idxs = c(jra_idx, bom1, bom2),
+                  .gene_names = c("Jra", "Bomanin Short 1", "Bomanin Short 2"),
+                  .title = "")
+plotDevImmuneExpr(.gene_idxs = c(jra_idx),
+                  .gene_names = c("Jra"),
+                  .title = "Jra alone")
+
+plotDevImmuneExpr(.gene_idxs = c(pepLF, pepSD),
+                  .gene_names = c("Pep LF (Pleiotropic)", "Pep SD (Immune)"),
+                  .title = "Peptidoglycan recognition proteins")
 
 #### How variable is gene expression in each dataset? ####
 
@@ -222,8 +252,7 @@ ggplot(vardf, aes(x = cv)) +
 # Conclusion: Immune/Dev datasets have similar mean expression,
 # But dev has more variable expression
 
-#### Which cluster shapes are most common among pleiotropic, immune, and developmental genes? ####
-
+#### Alleuvial: Which cluster shapes are most common among pleiotropic, immune, and developmental genes? ####
 plotdf <- clustdf |> select(gene_name, williams_category, immune_or_dev, label, robust) |> 
   pivot_wider(id_cols = c("gene_name", "williams_category"),
               names_from = immune_or_dev, values_from = c("label", "robust"))
@@ -273,3 +302,12 @@ pdf("figures/alluvial_n.pdf",
     width = 8, height = 16)
 p_n
 dev.off()
+
+#### Investigating alleuvial examples ####
+# 3-1 (Plei) vs 4-1 (Immune)
+clustdf |> filter(robust) |>
+  select(gene_name, williams_category, label, immune_or_dev) |> 
+  filter(williams_category %in% c("Immune_Non_Pleiotropic", "Pleiotropic")) |> 
+  pivot_wider(id_cols = c("gene_name", "williams_category"),
+              names_from = immune_or_dev, values_from = label) |> 
+  filter(immune %in% c(3, 4) & dev == 1) |> View()

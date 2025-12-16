@@ -118,6 +118,34 @@ pdf("figures/lines_dev.pdf",
 p
 dev.off()
 
+# scaled expression:
+scaledf <- avgdf |> group_by(label, replicate) |> 
+  summarise(mean = mean(avg_expr),
+            sd = sd(avg_expr))
+avgdf <- left_join(avgdf, scaledf, by = c("label", "replicate"))
+avgdf$scaled_expr <- (avgdf$avg_expr - avgdf$mean)/avgdf$sd
+p <- ggplot(avgdf, 
+            aes(x = factor(hour), y = scaled_expr)) +
+  geom_line(aes(color = factor(label), 
+                group = interaction(label, replicate),
+                linetype = replicate)) +
+  geom_point(aes(color = factor(label), 
+                 group = interaction(label, replicate)),
+             size = 0.25) +
+  #scale_color_brewer(palette = "Set1") +
+  scale_x_discrete(breaks = c(0, 2, 4, 6, 12, 24, 48, 120)) +
+  labs(color = "Cluster") +
+  theme_classic() +
+  ylab("Average cluster expression\n(centered and scaled)") +
+  xlab("Hours after injection") +
+  facet_wrap(~factor(label))
+#theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+p
+pdf("figures/lines_dev_scaled.pdf",
+    height = 4, width = 7)
+p
+dev.off()
+
 #### Do non-robust genes have less-responsive expression? ####
 vardf <- counts |> select(gene_name)
 vardf$mean_expr <- apply(as.matrix(counts[,-1]), 1, FUN = mean)

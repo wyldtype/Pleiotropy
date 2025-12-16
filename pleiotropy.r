@@ -58,7 +58,7 @@ avgdf$replicate <- if_else(grepl(x = avgdf$timepoint, pattern = "A"),
 avgdf$timepoint <- parse_number(avgdf$timepoint)
 avgdf$hours <- c(0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[avgdf$timepoint]
 # transcripts per million:
-ggplot(avgdf, 
+p <- ggplot(avgdf, 
        aes(x = factor(hours), y = avg_expr)) +
   geom_line(aes(color = factor(label), 
                 group = interaction(label, replicate),
@@ -73,9 +73,14 @@ ggplot(avgdf,
   ylab("Average cluster expression (tpm)") +
   xlab("Hours after injection") +
   facet_wrap(~factor(label))
+p
+pdf("figures/lines.pdf",
+    height = 4, width = 7)
+p
+dev.off()
 # conclusion: cluster 5 is way higher expressed (and a quite small cluster)
 # transcripts per million, removing cluster 5:
-ggplot(filter(avgdf, label != 5), 
+p <- ggplot(filter(avgdf, label != 5), 
        aes(x = factor(hours), y = avg_expr)) +
   geom_line(aes(color = factor(label), 
                 group = interaction(label, replicate),
@@ -90,6 +95,11 @@ ggplot(filter(avgdf, label != 5),
   ylab("Average cluster expression (tpm)") +
   xlab("Hours after injection") +
   facet_wrap(~factor(label))
+p
+pdf("figures/lines_no5.pdf",
+    height = 4, width = 7)
+p
+dev.off()
 # scaled expression:
 scaledf <- avgdf |> group_by(label, replicate) |> 
   summarise(mean = mean(avg_expr),
@@ -113,7 +123,7 @@ p <- ggplot(avgdf,
   facet_wrap(~factor(label))
   #theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 p
-pdf("figures/lines.pdf",
+pdf("figures/lines_scaled.pdf",
     height = 4, width = 7)
 p
 dev.off()
