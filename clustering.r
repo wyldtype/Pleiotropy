@@ -2,10 +2,11 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr",
          "stringr", "WGCNA", "cluster", "DESeq2", "circlize", "stats"), FUN = require,
        character.only = TRUE)
 
+# loading counts, infodf, and getter functions
 load("data/ImmuneCounts.RData")
 
 #### Sample PCA to look for outliers ####
-pca <- prcomp(cor(counts[,-1])) # TODO when you care to: eigen() and plotting vectors didn't work the same and I don't know what the difference between eigen and prcomp is (scaling and rotation I think)
+pca <- prcomp(cor(counts[,-1])) # fyi: eigen() and prcomp() produce different eigenvalues and vectors, and I don't know why (scaling and rotation I suspect)
 plot(x = c(1:length(pca$sdev)),
      y = pca$sdev/sum(pca$sdev),
      xlab = "PC", ylab = "% var explained") # 4 PCs

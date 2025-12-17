@@ -120,11 +120,237 @@ dim(dev_counts_tpm)
 oog_counts_tpm <- oog_counts_tpm[oog_counts_tpm[,1] %in% common_genes,]
 dim(oog_counts_tpm)
 
-#### Saving ####
+#### Dataset-specific sample processing & saving ####
+
+#### Imd challenge ####
+# nothing specifically needed to process immune---no getter functions, no infodf
 counts <- immune_counts_tpm
 save(counts, file = "data/ImmuneCounts.RData")
+
+#### Embryogenesis ####
 counts <- dev_counts_tpm
-save(counts, file = "data/DevCounts.RData")
+
+info_matrix <- read_delim(file = "data/GEO_Becker/GSE121160_series_matrix.txt",
+                          delim = "\t", col_names = c("name", "content")) # this is not ideal, b/c some rows have tabs delim each samples values and others don't and they're not consecutive
+info_list <- as.list(info_matrix$content)
+names(info_list) <- info_matrix$name 
+infodf <- tibble(condition = info_list$`!Sample_title` |> trimws() |> 
+                   str_split(pattern = "\\s") |> 
+                   unlist(),
+                 sample_name = info_list$`!Series_sample_id` |> trimws() |> 
+                   str_split(pattern = "\\s") |> 
+                   unlist())
+infodf$hour <- str_split_i(infodf$condition, pattern = "_", i = 1) |> 
+  parse_number()
+infodf$replicate <- str_split_i(infodf$condition, pattern = "_", i = 2)
+infodf$colname <- paste(infodf$sample_name, infodf$condition, sep = "_")
+
+getHour <- function(.name, .info = infodf) {
+  if (all(grepl("^[0-9+]*$", .name)))
+    return(as.numeric(.name))
+  out_vec <- purrr::map(.name, \(nm) {
+    .info |> filter(colname == nm) |> 
+      select(hour) |> pull()
+  }) |> unlist()
+  return(out_vec)
+}
+# test for getHour
+colnames(counts)[1:10]
+getHour(colnames(counts)[1])
+getHour(colnames(counts)[10])
+getHour(colnames(counts)[2:9])
+getHour(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
+getHour(c("0", "3", "4"))
+
+getReplicate <- function(.name, .info = infodf) {
+  out_vec <- purrr::map(.name, \(nm) {
+    .info |> filter(colname == nm) |> 
+      select(replicate) |> pull()
+  }) |> unlist()
+  return(out_vec)
+}
+# test for getReplicate
+colnames(counts)[1:10]
+getReplicate(colnames(counts)[1])
+getReplicate(colnames(counts)[9])
+getReplicate(colnames(counts)[2:9])
+getReplicate(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
+
+### Checking for missing samples
+table(getReplicate(colnames(counts)[-1]),
+      getHour(colnames(counts)[-1])) # nothing missing
+
+#### Dev: Sample PCA to look for outliers ####
+pca <- prcomp(cor(counts[,-1]))
+plot(x = c(1:length(pca$sdev)),
+     y = pca$sdev/sum(pca$sdev),
+     xlab = "PC", ylab = "% var explained") # 4 PCs
+plotdf <- tibble(pc1 = pca$x[,"PC1"], pc2 = pca$x[,"PC2"],
+                 pc3 = pca$x[,"PC3"], pc4 = pca$x[,"PC4"],
+                 label = colnames(counts)[-1])
+plotdf$hour <- getHour(colnames(counts[-1]))
+plotdf$replicate <- getReplicate(colnames(counts[-1]))
+plotdf$condition <- paste(plotdf$hour, plotdf$replicate, sep = "_")
+# PC1 and PC2
+ggplot(plotdf, aes(x = pc1, y = pc2)) +
+  geom_text(aes(label = condition, color = hour)) +
+  geom_line(aes(group = hour)) +
+  xlab(paste0("PC1 ", round(pca$sdev[1]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  theme_classic() +
+  theme(legend.position = "none") 
+# PC2 captures dev time
+# 16hr rep1 has a lot of the PC1 variation
+# other outliers: 3hr rep2, 1hr rep4
+# PC2 and PC3
+ggplot(plotdf, aes(x = pc3, y = pc2)) +
+  geom_text(aes(label = condition, color = hour)) +
+  geom_line(aes(group = hour)) +
+  xlab(paste0("PC3 ", round(pca$sdev[3]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  theme_classic() +
+  theme(legend.position = "none")
+
+# Based on PCA, reps1 and 2 are no closer related than 3 and 4,
+# so should be fine to split it 1-2 and 3-4
+
+#### Dev: Removing outlier samples ####
+to_remove <- c("GSM3427103_00h_4", "GSM3427113_03h_2", "GSM3427144_16h_1")
+counts <- counts[,setdiff(colnames(counts), to_remove)]
+
+#### Dev: Saving ####
+save(counts, infodf, getHour, getReplicate, file = "data/DevCounts.RData")
+
+#### Oogenesis ####
 counts <- oog_counts_tpm
-save(counts, file = "data/OogCounts.RData")
+
+# info
+info_matrix_GermSoma <- read_delim(file = "data/Geo_Tarikere/GSE172015_Germ_Soma_table_counts_metadata_long_ctrl.tsv",
+                                   delim = "\t", col_select = 1:5) |> 
+  unique()
+info_matrix_WholeOvary <- read_delim(file = "data/Geo_Tarikere/GSE172015_WholeOvary_metadata_long.tsv",
+                                     delim = "\t", col_select = 2:6) |> 
+  unique()
+colnames(info_matrix_GermSoma) <- c("sample_name", "cell_type", "treatment", "stage", "replicate")
+colnames(info_matrix_WholeOvary) <- c("sample_name", "cell_type", "treatment", "stage", "replicate")
+infodf <- bind_rows(info_matrix_GermSoma, info_matrix_WholeOvary)
+infodf$hour <- if_else(infodf$stage == "Early",
+                       true = 72, false = if_else(infodf$stage == "Mid",
+                                                  true = 96, false = 120)) # Hours After Egg Laying (the egg that is developing into the larva in which oogenesis is measured)
+
+getHour <- function(.name, .info = infodf) {
+  stage_vec <- purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 3)) |> unlist()
+  out_vec <- purrr::map(stage_vec, \(st) {
+    if_else(st == "Early",
+            true = 72, 
+            false = if_else(st == "Mid",
+                            true = 96, 
+                            false = 120))
+  }) |> unlist()
+  return(out_vec)
+}
+# test for getHour
+colnames(counts)[1:10]
+getHour(colnames(counts)[1]) # should be NA
+getHour(colnames(counts)[2])
+getHour(colnames(counts)[10])
+getHour(colnames(counts)[2:9])
+getHour(c("G_Ctrl_Early_3", "G_Ctrl_Late_2", "G_Ctrl_Mid_3"))
+
+getReplicate <- function(.name, .info = infodf) {
+  purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 4)) |> unlist()
+}
+# test for getReplicate
+colnames(counts)[1:10]
+getReplicate(colnames(counts)[1]) # should be NA
+getReplicate(colnames(counts)[2])
+getReplicate(colnames(counts)[9])
+getReplicate(colnames(counts)[2:9])
+getReplicate(c("G_Ctrl_Early_3", "G_Ctrl_Late_2", "G_Ctrl_Mid_1"))
+
+getCellType <- function(.name, .info = infodf) {
+  out_vec <- purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 1)) |> unlist()
+  out_vec <- gsub(x = out_vec, pattern = "^G$", "Germ")
+  out_vec <- gsub(x = out_vec, pattern = "^S$", "Somatic")
+  return(out_vec)
+}
+# test for getCellType
+colnames(counts)[1:10]
+getCellType(colnames(counts)[1]) # should be NA
+getCellType(colnames(counts)[2])
+getCellType(colnames(counts)[c(2, 13, 20)])
+getCellType(c("G_Ctrl_Early_1", "S_Ctrl_Early_3", "WholeOvary_Ctrl_Early_1"))
+
+### Checking for missing samples
+table(getReplicate(colnames(counts)[-1]),
+      getHour(colnames(counts)[-1]),
+      getCellType(colnames(counts)[-1])) # 4th replicate added only in Germ, to 96 and 120 to bring them up to 3 reps per timepoint
+
+#### Oog: Renaming replicates ####
+# Seeing as rep1 from the three timepoints isn't the same fly (there are 20-30 ovaries per sample),
+# we will rename rep4 in Germ so that all three cell types have reps 1,2,3
+
+# renaming Germ rep4 Mid to Germ rep2 Mid, and rename Germ rep4 Late to Germ rep1 Late
+# renaming counts
+colnames(counts) <- gsub(x = colnames(counts),
+                         pattern = "G_Ctrl_Mid_4", 
+                         "G_Ctrl_Mid_2")
+colnames(counts) <- gsub(x = colnames(counts),
+                         pattern = "G_Ctrl_Late_4", 
+                         "G_Ctrl_Late_1")
+# renaming infodf
+infodf[infodf$replicate == 4 & infodf$stage == "Mid",]$replicate <- 2
+infodf[infodf$replicate == 4 & infodf$stage == "Late",]$replicate <- 1
+
+# re-check table
+table(getReplicate(colnames(counts)[-1]),
+      getHour(colnames(counts)[-1]),
+      getCellType(colnames(counts)[-1])) # 3 reps per timepoint/cell type
+
+### Oog: Sample PCA to look for outliers
+pca <- prcomp(cor(counts[,-1]))
+plot(x = c(1:length(pca$sdev)),
+     y = pca$sdev/sum(pca$sdev),
+     xlab = "PC", ylab = "% var explained") # 3 PCs
+plotdf <- tibble(pc1 = pca$x[,"PC1"], pc2 = pca$x[,"PC2"],
+                 pc3 = pca$x[,"PC3"], pc4 = pca$x[,"PC4"],
+                 label = colnames(counts)[-1])
+plotdf$hour <- getHour(colnames(counts[-1]))
+plotdf$replicate <- getReplicate(colnames(counts[-1]))
+plotdf$cell_type <- getCellType(colnames(counts[-1]))
+plotdf$condition <- paste(plotdf$cell_type, plotdf$hour, plotdf$replicate, sep = "_")
+# PC1 and PC2
+ggplot(plotdf, aes(x = pc1, y = pc2)) +
+  geom_text(aes(label = condition, color = hour)) +
+  geom_line(aes(group = interaction(hour, cell_type))) +
+  xlab(paste0("PC1 ", round(pca$sdev[1]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  theme_classic() +
+  theme(legend.position = "none") # Germ 96h is all over the place
+# facet by cell type
+ggplot(plotdf, aes(x = pc1, y = pc2)) +
+  geom_text(aes(label = condition, color = hour)) +
+  geom_line(aes(group = hour)) +
+  xlab(paste0("PC1 ", round(pca$sdev[1]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  facet_wrap(~cell_type)
+# PC1 is basically just variation between Germ replicates. Seeing as this was also
+# The cell type that required extra replicates, it was probably the most challenging
+# tissue to collect consistently. Germ_120_1 looks fine (one of the rep 4s we renamed).
+# Germ_96_2 is a little more out there, but so is Germ_72_1, so I think this is just
+# the reality of collecting the Germ cells. We won't remove any samples, but we'll
+# take the extensive variation between replicates in the Germ condition into account
+
+#### Oog: Saving ####
+save(counts, infodf, getHour, getReplicate, getCellType, file = "data/OogCounts.RData")
 
