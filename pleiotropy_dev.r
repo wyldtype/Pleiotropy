@@ -4,38 +4,6 @@ load("data/ClusteringDev.RData")
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
                       sheet = 2, na = "NA") 
 
-#### Parsing sample metadata ####
-getHour <- function(.name, .info = infodf) {
-  if (all(grepl("^[0-9+]*$", .name)))
-    return(as.numeric(.name))
-  out_vec <- purrr::map(.name, \(nm) {
-    .info |> filter(colname == nm) |> 
-      select(hour) |> pull()
-  }) |> unlist()
-  return(out_vec)
-}
-# test for getHour
-colnames(counts)[1:10]
-getHour(colnames(counts)[1])
-getHour(colnames(counts)[10])
-getHour(colnames(counts)[2:9])
-getHour(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
-getHour(c("0", "3", "4"))
-
-getReplicate <- function(.name, .info = infodf) {
-  out_vec <- purrr::map(.name, \(nm) {
-    .info |> filter(colname == nm) |> 
-      select(replicate) |> pull()
-  }) |> unlist()
-  return(out_vec)
-}
-# test for getReplicate
-colnames(counts)[1:10]
-getReplicate(colnames(counts)[1])
-getReplicate(colnames(counts)[9])
-getReplicate(colnames(counts)[2:9])
-getReplicate(c("GSM3427149_18h_2", "GSM3427150_18h_3", "GSM3427153_20h_2"))
-
 #### Pie charts of cluster membership for Immune, Developmental, and Pleiotropic genes ####
 
 clustdf <- left_join(x = clustdf,

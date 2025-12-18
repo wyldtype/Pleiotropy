@@ -20,6 +20,12 @@ clustdf_dev <- clustdf
 robust_dev_genes <- robust_cluster_genes
 rm(counts, clustdf, robust_cluster_genes)
 
+load("data/ClusteringOog.RData")
+counts_oog <- counts
+clustdf_oog <- clustdf
+robust_oog_genes <- robust_cluster_genes
+rm(counts, clustdf, robust_cluster_genes)
+
 # combining Immune/dev results
 # cluster dataframe
 clustdf_immune$immune_or_dev <- "immune"
