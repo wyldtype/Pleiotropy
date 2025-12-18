@@ -5,6 +5,8 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr",
 # loading counts, infodf, and getter functions
 load("data/DevCounts.RData")
 
+# TODO: Filtering out timepoints before 3hr AEL (pre-zygotic control)
+
 #### Checking for 0-count genes ####
 
 # also removing 0-count genes in split counts (which will also remove 
@@ -197,7 +199,7 @@ plotDendroAndColors(dendro = test_clusters$tree, colors = test_clusters$df$label
 #### QC: A-B split ####
 # clustering A and B replicates separately to decide which genes have
 # robust clustering (which are presumably the ones that have dynamic and
-# reproducible expression responses during the Imd challenge)
+# reproducible expression responses during Embrogenesis)
 clustA <- corCluster(.cts = smoothA, .tree_too = TRUE)
 plotDendroAndColors(dendro = clustA$tree, colors = clustA$df$label, dendroLabels = FALSE)
 clustB <- corCluster(.cts = smoothB, .tree_too = TRUE)

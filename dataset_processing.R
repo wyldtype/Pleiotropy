@@ -1,5 +1,5 @@
-sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr", 
-         "stringr", "edgeR"), FUN = require, character.only = TRUE)
+sapply(c("tidyr", "dplyr", "ggplot2", "purrr", "readxl", "readr", 
+         "stringr"), FUN = require, character.only = TRUE)
 
 #### Reading in datasets ####
 # Imd challenge, Schlamp et al.
@@ -123,8 +123,42 @@ dim(oog_counts_tpm)
 #### Dataset-specific sample processing & saving ####
 
 #### Imd challenge ####
-# nothing specifically needed to process immune---no getter functions, no infodf
+# no getter functions, no infodf for immune (b/c colnames are so interpretable)
 counts <- immune_counts_tpm
+
+#### Sample PCA to look for outliers ####
+pca <- prcomp(cor(counts[,-1])) # fyi: eigen() and prcomp() produce different eigenvalues and vectors, and I don't know why (scaling and rotation I suspect)
+plot(x = c(1:length(pca$sdev)),
+     y = pca$sdev/sum(pca$sdev),
+     xlab = "PC", ylab = "% var explained") # 4 PCs
+plotdf <- tibble(pc1 = pca$x[,"PC1"], pc2 = pca$x[,"PC2"],
+                 pc3 = pca$x[,"PC3"], pc4 = pca$x[,"PC4"],
+                 label = colnames(counts)[-1])
+plotdf$timepoint <- parse_number(plotdf$label)
+plotdf$hour <- c(0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[plotdf$timepoint]
+# PC1 and PC2
+ggplot(plotdf, aes(x = pc1, y = pc2)) +
+  geom_text(aes(label = label, color = timepoint)) +
+  geom_line(aes(group = timepoint)) +
+  xlab(paste0("PC1 ", round(pca$sdev[1]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
+              "% of variance")) +
+  theme_classic() +
+  theme(legend.position = "none") # 6A is an outlier sample in PC2
+
+# Checking for missing timepoints
+colnamesA <- grep("A", colnames(counts), value = TRUE)
+colnamesB <- grep("B", colnames(counts), value = TRUE) 
+colnamesA
+colnamesB
+setdiff(parse_number(colnamesA), parse_number(colnamesB)) 
+setdiff(parse_number(colnamesB), parse_number(colnamesA))
+# conclusion: B is missing timepoint 4
+
+# removing timepoint 6 (outlier), 4 (missing)
+counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A"))]
+
 save(counts, file = "data/ImmuneCounts.RData")
 
 #### Embryogenesis ####
@@ -145,6 +179,7 @@ infodf$hour <- str_split_i(infodf$condition, pattern = "_", i = 1) |>
 infodf$replicate <- str_split_i(infodf$condition, pattern = "_", i = 2)
 infodf$colname <- paste(infodf$sample_name, infodf$condition, sep = "_")
 
+# getter functions
 getHour <- function(.name, .info = infodf) {
   if (all(grepl("^[0-9+]*$", .name)))
     return(as.numeric(.name))
@@ -242,40 +277,73 @@ infodf$hour <- if_else(infodf$stage == "Early",
                        true = 72, false = if_else(infodf$stage == "Mid",
                                                   true = 96, false = 120)) # Hours After Egg Laying (the egg that is developing into the larva in which oogenesis is measured)
 
+# getter functions
 getHour <- function(.name, .info = infodf) {
-  stage_vec <- purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 3)) |> unlist()
-  out_vec <- purrr::map(stage_vec, \(st) {
-    if_else(st == "Early",
-            true = 72, 
-            false = if_else(st == "Mid",
-                            true = 96, 
-                            false = 120))
+  parsed_name_list <- purrr::map(.name, \(nm) str_split(nm, pattern = "_"))
+  out_vec <- purrr::map(parsed_name_list, \(st) {
+    st <- unlist(st)
+    if(("Early" %in% st) | (72 %in% st)) {
+      return(72)
+    }
+    if(("Mid" %in% st) | (96 %in% st)) {
+      return(96)
+    }
+    if(("Late" %in% st) | (120 %in% st)) {
+      return(120)
+    }
+    else {
+      return(NA)
+    }
   }) |> unlist()
   return(out_vec)
 }
 # test for getHour
 colnames(counts)[1:10]
 getHour(colnames(counts)[1]) # should be NA
+getHour("early") # should be NA
 getHour(colnames(counts)[2])
 getHour(colnames(counts)[10])
 getHour(colnames(counts)[2:9])
 getHour(c("G_Ctrl_Early_3", "G_Ctrl_Late_2", "G_Ctrl_Mid_3"))
+getHour(c("Early_3", "Late_2", "Mid_3"))
 
 getReplicate <- function(.name, .info = infodf) {
-  purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 4)) |> unlist()
+  purrr::map(.name, \(nm) {
+    n_segments <- str_split(nm, pattern = "_") |> unlist() |> 
+      length()
+    rep_name <- str_split_i(nm, pattern = "_", i = n_segments) |> unlist()
+    if (rep_name == "name") {
+      return(NA)
+    }
+    return(rep_name)
+  }) |> unlist()
 }
 # test for getReplicate
 colnames(counts)[1:10]
 getReplicate(colnames(counts)[1]) # should be NA
+getReplicate("G_Early_3") # should be 3 b/c replicate is the last item in the colname (unlike getHour and getCellType, which look for specific items
 getReplicate(colnames(counts)[2])
 getReplicate(colnames(counts)[9])
 getReplicate(colnames(counts)[2:9])
 getReplicate(c("G_Ctrl_Early_3", "G_Ctrl_Late_2", "G_Ctrl_Mid_1"))
 
 getCellType <- function(.name, .info = infodf) {
-  out_vec <- purrr::map(.name, \(nm) str_split_i(nm, pattern = "_", i = 1)) |> unlist()
-  out_vec <- gsub(x = out_vec, pattern = "^G$", "Germ")
-  out_vec <- gsub(x = out_vec, pattern = "^S$", "Somatic")
+  parsed_name_list <- purrr::map(.name, \(nm) str_split(nm, pattern = "_"))
+  out_vec <- purrr::map(parsed_name_list, \(st) {
+    st <- unlist(st)
+    if(("G" %in% st) | ("Germ" %in% st)) {
+      return("Germ")
+    }
+    if(("S" %in% st) | ("Somatic" %in% st)) {
+      return("Somatic")
+    }
+    if("WholeOvary" %in% st) {
+      return("WholeOvary")
+    }
+    else {
+      return(NA)
+    }
+  }) |> unlist()
   return(out_vec)
 }
 # test for getCellType

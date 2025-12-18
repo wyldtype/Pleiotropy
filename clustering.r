@@ -5,41 +5,9 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr",
 # loading counts, infodf, and getter functions
 load("data/ImmuneCounts.RData")
 
-#### Sample PCA to look for outliers ####
-pca <- prcomp(cor(counts[,-1])) # fyi: eigen() and prcomp() produce different eigenvalues and vectors, and I don't know why (scaling and rotation I suspect)
-plot(x = c(1:length(pca$sdev)),
-     y = pca$sdev/sum(pca$sdev),
-     xlab = "PC", ylab = "% var explained") # 4 PCs
-plotdf <- tibble(pc1 = pca$x[,"PC1"], pc2 = pca$x[,"PC2"],
-                 pc3 = pca$x[,"PC3"], pc4 = pca$x[,"PC4"],
-                 label = colnames(counts)[-1])
-plotdf$timepoint <- parse_number(plotdf$label)
-plotdf$hour <- c(0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[plotdf$timepoint]
-# PC1 and PC2
-ggplot(plotdf, aes(x = pc1, y = pc2)) +
-  geom_text(aes(label = label, color = timepoint)) +
-  geom_line(aes(group = timepoint)) +
-  xlab(paste0("PC1 ", round(pca$sdev[1]/sum(pca$sdev), digits = 2)*100,
-              "% of variance")) +
-  ylab(paste0("PC2 ", round(pca$sdev[2]/sum(pca$sdev), digits = 2)*100,
-              "% of variance")) +
-  theme_classic() +
-  theme(legend.position = "none") # 6A is an outlier sample in PC2
-
-#### Excluding outlier/missing samples ####
-# Checking for missing timepoints
-colnamesA <- grep("A", colnames(counts), value = TRUE)
-colnamesB <- grep("B", colnames(counts), value = TRUE) 
-colnamesA
-colnamesB
-setdiff(parse_number(colnamesA), parse_number(colnamesB)) 
-setdiff(parse_number(colnamesB), parse_number(colnamesA))
-# conclusion: B is missing timepoint 4
-
-# removing timepoint 6 (outlier), 4 (missing)
-counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A"))]
-
-# ..and every timepoint after 24 hours (>12)
+# Removing every timepoint after 24 hours (>12) for clustering
+# Rationale: Schlamp did the same. The primary expression responses happen
+# in the first 24 hours and we want clustering to be based on these
 counts24 <- counts[,setdiff(colnames(counts), c("13A", "14A", "15A", "16A", "17A", "18A", "19A", "20A", "21A",
                                                 "13B", "14B", "15B", "16B", "17B", "18B", "19B", "20B", "21B"))]
 
