@@ -135,3 +135,38 @@ clustdf$signal_to_noise <- map2(clustdf$gene_name, clustdf$environment,
                                                   .degree = e_degree)
                                   return(getSNR(mod))
                                 }) |> unlist()
+
+sort(clustdf$signal_to_noise, decreasing = TRUE)[1:10] # some major outliers
+sort(clustdf$signal_to_noise, decreasing = FALSE)[1:20] # some major outliers, all in "Other" category
+plotdf <- filter(clustdf, signal_to_noise < 1e30 & signal_to_noise > 1e-30)
+plotdf$williams_category <- factor(plotdf$williams_category,
+                                   levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic",
+                                              "Pleiotropic", "Other"),
+                                   labels = c("Developmental", "Immune",
+                                              "Pleiotropic", "Neither"))
+group_colors <- c("Developmental"="#E41A1CFF",
+                  "Immune"="#377EB8FF",
+                  "Pleiotropic"="#984EA3FF",
+                  "Neither"="#4DAF4AFF")
+
+pdf("figures/violin.pdf", width = 5, height = 3.5)
+ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
+  #geom_jitter(aes(color = williams_category)) +
+  geom_violin(aes(fill = williams_category)) +
+  stat_summary(fun = "mean", geom = "point") +
+  geom_hline(data = summarise(group_by(filter(plotdf, williams_category == "Neither"),
+                             environment), meanSNR = mean(log2(signal_to_noise))),
+             aes(yintercept = meanSNR)) +
+  stat_compare_means(comparisons = list(c("Developmental", "Neither"),
+                                        c("Immune", "Neither"),
+                                        c("Pleiotropic", "Neither"))) +
+  #scale_fill_brewer(type = "qual", palette = "Set1") +
+  scale_fill_manual(values = group_colors) +
+  theme_classic() +
+  facet_wrap(~factor(environment, levels = c("dev", "immune", "oog"), 
+                     labels = c("Embryonic Development", "Imd Challenge", "Oogenesis"))) +
+  xlab("gene category") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        legend.position = "none") +
+  ylim(c(log2(min(plotdf$signal_to_noise)), log2(max(plotdf$signal_to_noise)) + 7))
+dev.off()
