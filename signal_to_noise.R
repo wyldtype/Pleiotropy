@@ -1,4 +1,4 @@
-sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl", "readr", "stringr"), FUN = require,
+sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl", "readr", "stringr", "plotly", "lmtest", "pheatmap"), FUN = require,
        character.only = TRUE)
 
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
@@ -111,6 +111,22 @@ test_mod <- fitModel(.counts_vec = test_data$counts,
 test_anova <- anova(test_mod)
 test_anova[1,"Sum Sq"]/test_anova["Residuals", "Sum Sq"]
 
+### fits a null model where time is not a predictor, for likelihood ratio test
+fitNullModel <- function(.counts_vec, .hour_vec) {
+  x <- data.frame(count = .counts_vec,
+                  hour = .hour_vec)
+  mod <- lm(count ~ 1, data = x)
+  return(mod)
+}
+# tests for fitNullModel
+test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
+                              .hour_vec = test_data$hour)
+test_full_lik <- logLik(test_mod)
+test_null_lik <- logLik(test_null_mod)
+test_lrt_stat <- -2 * (as.numeric(test_null_lik)-as.numeric(test_full_lik)) # why scale by -2? No idea but it makes it a chisq distributed stat: https://api.rpubs.com/tomanderson_34/lrt
+pchisq(test_lrt_stat, df = 1, lower.tail = FALSE)
+
 ### get the anova info
 getSNR <- function(.mod) {
   mod_anova <- anova(.mod)
@@ -122,21 +138,57 @@ test_anova <- anova(test_mod)
 test_anova[1,"Sum Sq"]/test_anova["Residuals", "Sum Sq"]
 getSNR(test_mod) # should be the same as above
 
-#### Calculating Signal to Noise ####
-clustdf$signal_to_noise <- map2(clustdf$gene_name, clustdf$environment,
-                                \(g, e) {
-                                  cat(which(paste(g, e) == paste(clustdf$gene_name, clustdf$environment)),
-                                      "/", nrow(clustdf), "\n")
-                                  e_degree <- if_else(e == "oog",
-                                                      true = 2, false = 3) # Oog only has 3 time categories, polynomial can only be degree 2
-                                  g_data <- getData(.gene = g, .environment = e)
-                                  mod <- fitModel(.counts_vec = g_data$counts,
-                                                  .hour_vec = g_data$hour,
-                                                  .degree = e_degree)
-                                  return(getSNR(mod))
-                                }) |> unlist()
+### get model coefficients and model test results
+getPolyCoefficients <- function(.mod, .null_mod) {
+  coefs <- coefficients(.mod)
+  coef_names <- c("Intercept", paste0("coef", 1:(length(coefs) - 1)))
+  # likelihood ratio test of model fit
+  full_lik <- logLik(.mod)
+  null_lik <- logLik(.null_mod)
+  lrt_stat <- -2 * (as.numeric(null_lik)-as.numeric(full_lik))
+  lrt_pval <- pchisq(lrt_stat, df = 1, lower.tail = FALSE)
+  # formatting data for output as one row of tibble
+  outdf <- tibble(name = coef_names,
+                  value = as.numeric(coefs)) |> 
+    pivot_wider(names_from = "name", values_from = "value")
+  outdf$lrt_pval <- lrt_pval
+  return(outdf)
+}
+# tests for getPolyCoefficients
+test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+test_mod <- fitModel(.counts_vec = test_data$counts, 
+                     .hour_vec = test_data$hour,
+                     .degree = 3)
+test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
+                              .hour_vec = test_data$hour)
+getPolyCoefficients(.mod = test_mod, .null_mod = test_null_mod) |> t()
 
-sort(clustdf$signal_to_noise, decreasing = TRUE)[1:10] # some major outliers
+#### Calculating Signal to Noise ####
+# dataframe of modeling results for each gene in each environment
+modeldf <- map2(clustdf$gene_name, clustdf$environment,
+                \(g, e) {
+                  cat(which(paste(g, e) == paste(clustdf$gene_name, clustdf$environment)),
+                      "/", nrow(clustdf), "\n")
+                  e_degree <- if_else(e == "oog",
+                                      true = 2, false = 3) # Oog only has 3 time categories, polynomial can only be degree 2
+                  g_data <- getData(.gene = g, .environment = e)
+                  mod <- fitModel(.counts_vec = g_data$counts,
+                                  .hour_vec = g_data$hour,
+                                  .degree = e_degree)
+                  null_mod <- fitNullModel(.counts_vec = g_data$counts,
+                                           .hour_vec = g_data$hour)
+                  snr <- getSNR(mod)
+                  coefdf <- getPolyCoefficients(.mod = mod, .null_mod = null_mod)
+                  outdf <- tibble("gene_name" = g, "environment" = e,
+                                  "signal_to_noise" = snr) |> 
+                    bind_cols(y = coefdf)
+                  return(outdf)
+                }) |> purrr::reduce(.f = bind_rows)
+
+# adding modeling results to clustdf
+clustdf <- left_join(clustdf, modeldf, by = c("gene_name", "environment"))
+
+sort(clustdf$signal_to_noise, decreasing = TRUE)[1:10] # some major outliers with huge SNR
 sort(clustdf$signal_to_noise, decreasing = FALSE)[1:20] # some major outliers, all in "Other" category
 plotdf <- filter(clustdf, signal_to_noise < 1e30 & signal_to_noise > 1e-30)
 plotdf$williams_category <- factor(plotdf$williams_category,
@@ -148,14 +200,12 @@ group_colors <- c("Developmental"="#E41A1CFF",
                   "Immune"="#377EB8FF",
                   "Pleiotropic"="#984EA3FF",
                   "Neither"="#4DAF4AFF")
-
-pdf("figures/violin.pdf", width = 5, height = 3.5)
-ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
+p <- ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
   #geom_jitter(aes(color = williams_category)) +
   geom_violin(aes(fill = williams_category)) +
   stat_summary(fun = "mean", geom = "point") +
   geom_hline(data = summarise(group_by(filter(plotdf, williams_category == "Neither"),
-                             environment), meanSNR = mean(log2(signal_to_noise))),
+                                       environment), meanSNR = mean(log2(signal_to_noise))),
              aes(yintercept = meanSNR)) +
   stat_compare_means(comparisons = list(c("Developmental", "Neither"),
                                         c("Immune", "Neither"),
@@ -169,4 +219,373 @@ ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         legend.position = "none") +
   ylim(c(log2(min(plotdf$signal_to_noise)), log2(max(plotdf$signal_to_noise)) + 7))
-dev.off()
+p
+# pdf("figures/violin.pdf", width = 5, height = 3.5)
+# p
+# dev.off()
+
+#### Inspecting individual genes ####
+plotExpressionProfile <- function(.counts, .info, .gene_idxs, .gene_names) {
+  countdf <- map2(.gene_idxs, .gene_names, \(g, nm) {
+    outdf <- tibble(sample = colnames(.counts)[-1],
+                    gene_vec = as.numeric(.counts[.counts$gene_name == g, -1]))
+    names(outdf) <- c("sample_name", nm)
+    return(outdf)
+  }) |> purrr::reduce(.f = left_join, by = "sample_name")
+  plotdf <- countdf |> pivot_longer(cols = setdiff(names(countdf), "sample_name"),
+                                    names_to = "gene", values_to = "expr") |> 
+    left_join(y = .info, by = "sample_name")
+  ggplot(plotdf, aes(x = factor(hour), y = expr)) +
+    geom_point(aes(color = factor(gene)),
+               size = 0.25) +
+    geom_line(aes(color = factor(gene),
+                  group = interaction(gene, replicate),
+                  linetype = factor(replicate))) +
+    #scale_color_brewer(palette = "Set1") +
+    labs(color = "Cluster") +
+    theme_classic() +
+    ylab("Expression (tpm)") +
+    xlab("Time (hours)") +
+    facet_wrap(~factor(gene, levels = .gene_names, 
+                       labels = .gene_names))
+}
+
+# looking at our massive outliers
+# high outliers
+test_highSNR_df <- clustdf |> arrange(desc(signal_to_noise)) |> 
+  slice_head(n = 10) |> 
+  select(all_of(c("gene_name", "environment")))
+test_highSNR_df$environment |> table() # oog
+plotExpressionProfile(.counts = counts$oog, .info = infodf$oog,
+                      .gene_idxs = test_highSNR_df$gene_name,
+                      .gene_names = c(1:10))
+# These look like genes in two categories:
+# 1) genes with high variability over time (what we want)
+# Or 2) genes with little to no variability over time,
+#       but absolutely no variation between replicates (what we don't want)
+
+# genes 1, 2, 4, and 7 are the main culprits of the second category
+test_highSNR_df$gene_name[c(1,2,4,7)] # "FBgn0034808" "FBgn0003254" "FBgn0032213" "FBgn0053056"
+counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[1],]
+counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[2],]
+counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[4],]
+counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[7],]
+
+# low outliers
+test_lowSNR_df <- clustdf |> arrange(signal_to_noise) |> 
+  slice_head(n = 10) |> 
+  select(all_of(c("gene_name", "environment")))
+test_lowSNR_df$environment |> table() # oog
+plotExpressionProfile(.counts = counts$oog, .info = infodf$oog,
+                      .gene_idxs = test_lowSNR_df$gene_name,
+                      .gene_names = c(1:10)) # checks out. these are good ones to have near-0 SNR
+
+# 10 random genes to compare replicate variation
+test_idxs <- sample(counts$oog$gene_name, size = 10)
+plotExpressionProfile(.counts = counts$oog, .info = infodf$oog,
+                      .gene_idxs = test_idxs,
+                      .gene_names = c(1:10))
+counts$oog[counts$oog$gene_name == test_idxs[9],] # pick any one that looks like a flat line
+# these do tend to have more var between replicates
+
+# conclusions: SNR appears to be quantifying what we're interested in. But it
+# is worth incorporating info on mean expression of each gene b/c the low expression
+# genes that just happen to have low variation between replicates can have a very high SNR
+
+#### Calculating mean expression ####
+clustdf$mean <- map2(clustdf$gene_name, clustdf$environment,
+                     \(g, e) {
+                       g_data <- getData(.gene = g, .environment = e)
+                       return(mean(g_data$counts))
+                     }) |> unlist() # takes a moment
+
+# makes SNR be between 0 and 1
+normalizeSNR <- function(.snr_vec) {
+  min_snr <- min(.snr_vec)
+  out_vec <- .snr_vec + (0 - min_snr)
+  new_max_snr <- max(out_vec)
+  out_vec <- out_vec/new_max_snr
+  return(out_vec)
+}
+# tests for normalizeSNR
+test_devdf <- clustdf |> filter(mean >= 10 & 
+                                  signal_to_noise < 100 &
+                                  environment == "dev")
+test_normSNR <- normalizeSNR(test_devdf$signal_to_noise)
+quantile(test_normSNR, q = c(0, 0.25, 0.5, 0.75, 1))
+
+#### Which genes have the largest jump in signal to noise between datasets? ####
+plotdf <- clustdf |> # filter(mean >= 10 & signal_to_noise < 100) |> 
+  filter(williams_category != "Other") |>
+  select(all_of(c("gene_name", "environment", "williams_category", "signal_to_noise"))) |> 
+  pivot_wider(id_cols = c("gene_name", "williams_category"),
+              names_from = "environment", values_from = "signal_to_noise") |> 
+  drop_na() |> # removes genes not expressed in all three environments
+  mutate(dev_norm = rank(dev, ties.method = "first"),
+         immune_norm = rank(immune, ties.method = "first"),
+         oog_norm = rank(oog, ties.method = "first"))
+  # mutate(dev_norm = as.numeric(scale(dev)),
+  #        immune_norm = as.numeric(scale(immune)),
+  #        oog_norm = as.numeric(scale(oog)))
+
+
+# Did scaling produce similar distributions of SNR?
+ggplot(pivot_longer(plotdf, cols = c("immune_norm", "dev_norm", "oog_norm")),
+       aes(x = value, fill = name)) + 
+  geom_density(aes(fill = name), alpha = 0.5) # dev is the weird one
+
+# 3D plot
+group_colors <- c("Developmental_Non_Pleiotropic"="#E41A1CFF",
+                  "Immune_Non_Pleiotropic"="#377EB8FF",
+                  "Pleiotropic"="#984EA3FF",
+                  "Other"="#4DAF4AFF")
+exampledf_dev <- filter(plotdf, gene_name == "FBgn0003612") # Pleiotropic gene that is high variability in dev and low in both other environments
+exampledf_immune <- filter(plotdf, gene_name == "FBgn0001125") # Dev gene that is high variability in immune and low in both other environments
+exampledf_immune2 <- filter(plotdf, gene_name == "FBgn0029990") # Immune gene that is high variability in immune and low in both other environments
+exampledf_immune3 <- filter(plotdf, gene_name == "FBgn0061356") # Immune gene that is high variability in immune and low in both other environments
+
+fig <- plot_ly(plotdf, x = ~dev_norm, y = ~immune_norm, 
+               z = ~oog_norm, color = ~williams_category,
+               hoverinfo = 'text',
+               text = ~gene_name,
+               colors = group_colors, alpha = 0.5, size = 0.25)
+fig <- fig |> add_markers()
+fig <- fig |> layout(scene = list(xaxis = list(title = 'Dev'),
+                                   yaxis = list(title = 'Immune'),
+                                   zaxis = list(title = 'Oog')))
+fig
+
+### following up on examples from figure
+# Plei genes wiht high var in Oog and Dev, low in Immune:
+gene_idxs <- "FBgn0010389" # heartless
+gene_idxs <- "FBgn0033438" # MMP2
+# genes with high var in all three:
+gene_idxs <- "FBgn0028540" # immune, not well characteriezd Predicted to enable glucose-6-phosphate 1-epimerase activity. Involved in defense response to virus. Predicted to be active in cytoplasm
+gene_idxs <- "FBgn0261547" # plei, Ephexin a rhoGEF
+gene_idxs <- "FBgn0027111" # dev, mple1
+
+# plotting
+p_immune <- plotExpressionProfile(.counts = counts$immune, 
+                      .info = infodf$immune, 
+                      .gene_idxs = gene_idxs,
+                      .gene_names = gene_idxs)
+p_dev <- plotExpressionProfile(.counts = counts$dev, 
+                      .info = infodf$dev, 
+                      .gene_idxs = gene_idxs,
+                      .gene_names = gene_idxs)
+p_oog <- plotExpressionProfile(.counts = counts$oog, 
+                      .info = infodf$oog, 
+                      .gene_idxs = gene_idxs,
+                      .gene_names = gene_idxs)
+ggarrange(p_immune, p_dev, p_oog, nrow = 1, ncol = 3,
+          common.legend = TRUE)
+
+#### Determining a signal-to-noise threshold for expression variability ####
+
+ggplot(filter(clustdf, signal_to_noise < 1e30 & signal_to_noise > 1e-30), 
+       aes(x = log2(signal_to_noise), y = -log10(lrt_pval))) +
+  geom_point(aes(color = environment)) +
+  facet_wrap(~environment)
+
+# By an SNR of 1, all the pvalues clearly "lift off" of the x-axis, so we can
+# use that as our cutoff for variability. Intuitively it makes sense, more
+# signal to noise
+
+# There has to be a mathematical reason why the likelihood ratio results and the 
+# sum of squares ratio are monotonically related, but we can deal with that later
+
+#### Clustering variable genes based on polynomial coefficients ####
+
+# plot polynomial curve
+fitCurve <- function(.coefs, .x_values) {
+  nterms <- length(.coefs) - 1
+  y <- map2(.x = c(0:nterms),
+            .y = .coefs, \(term, cf) {
+              return(cf*.x_values^term)
+            }) |> Reduce(f = `+`)
+  #y <- .coefs[1] + .coefs[2]*x + .coefs[3]*x^2 + .coefs[4]*x^3
+  return(y)
+}
+test_x <- runif(min = -2, max = 2, n = 1000)
+test_y <- fitCurve(.coefs = as.numeric(c(0, -2, 50, -40)),
+                   .x_values = test_x)
+plot(test_x, test_y)
+abline(v = 0, col = "red")
+abline(h = 0, col = "red")
+
+### Heatmap of polynomial coefficients in each environment
+
+# signal-to-noise <= 1
+plotdf <- clustdf |> filter(signal_to_noise <= 1) |> 
+  select(all_of(c("gene_name", "environment", "coef1", "coef2", "coef3"))) |> 
+  pivot_wider(id_cols = "gene_name", names_from = "environment", 
+              values_from = c("coef1", "coef2", "coef3")) |> 
+  select(-all_of("coef3_oog")) |> 
+  drop_na()
+plot_mat <- as.matrix(plotdf[,-1])
+rownames(plot_mat) <- plotdf$gene_name
+plot_mat <- plot_mat[, c("coef1_immune", "coef2_immune", "coef3_immune",
+                         "coef1_dev", "coef2_dev", "coef3_dev",
+                         "coef1_oog", "coef2_oog")]
+plot_mat <- apply(plot_mat, 1, scale)
+pheatmap(t(plot_mat), cluster_cols = FALSE, show_rownames = FALSE)
+
+# signal-to-noise > 1, immune
+plotdf <- clustdf |> filter(environment == "immune" & signal_to_noise > 1) |> 
+  select(all_of(c("gene_name", "coef1", "coef2", "coef3"))) |>
+  drop_na()
+plot_mat <- as.matrix(plotdf[,-1])
+rownames(plot_mat) <- plotdf$gene_name
+plot_mat <- apply(plot_mat, 1, scale, scale = TRUE, center = FALSE) |> t()
+pheatmap(plot_mat, cluster_cols = FALSE, 
+         show_rownames = FALSE,
+         show_colnames = TRUE, na_col = "grey30",
+         main = paste("Imd challenge,", nrow(plot_mat), "genes"))
+
+# signal-to-noise > 1, dev
+plotdf <- clustdf |> filter(environment == "dev" & signal_to_noise > 1) |> 
+  select(all_of(c("gene_name", "coef1", "coef2", "coef3"))) |>
+  drop_na()
+plot_mat <- as.matrix(plotdf[,-1])
+rownames(plot_mat) <- plotdf$gene_name
+plot_mat <- apply(plot_mat, 1, scale, scale = TRUE, center = FALSE) |> t()
+pheatmap(plot_mat, cluster_cols = FALSE, 
+         show_rownames = FALSE,
+         show_colnames = FALSE, na_col = "grey30",
+         main = paste("Embryonic Development,", nrow(plot_mat), "genes"))
+
+# signal-to-noise > 1, oog
+plotdf <- clustdf |> filter(environment == "oog" & signal_to_noise > 1 &
+                              signal_to_noise < 1e30) |> 
+  select(all_of(c("gene_name", "coef1", "coef2"))) |>
+  drop_na()
+plot_mat <- as.matrix(plotdf[,-1])
+rownames(plot_mat) <- plotdf$gene_name
+plot_mat <- apply(plot_mat, 1, scale, scale = TRUE, center = FALSE) |> t()
+pheatmap(plot_mat, cluster_cols = FALSE, 
+         show_rownames = FALSE,
+         show_colnames = TRUE, na_col = "grey30",
+         main = paste("Oogenesis,", nrow(plot_mat), "genes"))
+
+### Plot example genes from each cluster
+# immune
+test_gene_idxs <- clustdf |> 
+  filter(environment == "immune" & signal_to_noise > 1.1 &
+           coef1 > 0 & coef2 < -10 & coef3 > 10) |> 
+  select(gene_name) |> pull()
+test_gene_idxs # Syndecan
+plotExpressionProfile(.counts = counts$immune, 
+                      .info = infodf$immune, 
+                      .gene_idxs = test_gene_idxs,
+                      .gene_names = c(1:length(test_gene_idxs)))
+
+# dev
+test_gene_idxs <- clustdf |> 
+  filter(environment == "dev" & signal_to_noise > 2 &
+           coef1 < -100 & coef2 > 3000 & coef3 < -100) |> 
+  select(gene_name) |> pull()
+plotExpressionProfile(.counts = counts$dev, 
+                      .info = infodf$dev, 
+                      .gene_idxs = test_gene_idxs,
+                      .gene_names = c(1:length(test_gene_idxs)))
+
+
+# oog
+test_gene_idxs <- clustdf |> 
+  filter(environment == "oog" & signal_to_noise > 20 &
+           coef1 < -100 & coef2 > 100) |> 
+  select(gene_name) |> pull()
+plotExpressionProfile(.counts = counts$oog, 
+                      .info = infodf$oog, 
+                      .gene_idxs = test_gene_idxs,
+                      .gene_names = c(1:length(test_gene_idxs)))
+
+# TODO maybe: This def does not do the right polynomials yet
+plotExpressionProfileWithPolynomial <- function(.counts, .info, .gene_idxs, .gene_names, .polydf) {
+  gene_name_lookup <- tibble(gene_idx = .gene_idxs,
+                             gene = .gene_names)
+  countdf <- map2(.gene_idxs, .gene_names, \(g, nm) {
+    outdf <- tibble(sample = colnames(.counts)[-1],
+                    gene_vec = as.numeric(.counts[.counts$gene_name == g, -1]))
+    names(outdf) <- c("sample_name", nm)
+    return(outdf)
+  }) |> purrr::reduce(.f = left_join, by = "sample_name")
+  plotdf <- countdf |> pivot_longer(cols = setdiff(names(countdf), "sample_name"),
+                                    names_to = "gene", values_to = "expr") |> 
+    left_join(y = .info, by = "sample_name") |> 
+    left_join(y = gene_name_lookup, by = "gene")
+  plotdf$model <- map2(plotdf$hour, plotdf$gene_idx, \(h, g) {
+    coefs <- .polydf |> filter(gene_name == g) |>
+      select(-all_of(c("gene_name", "environment", "signal_to_noise"))) |> 
+      unlist() |> 
+      as.numeric()
+    return(fitCurve(.coefs = coefs, .x_values = h))
+  }) |> unlist()
+  ggplot(plotdf, aes(x = factor(hour), y = expr)) +
+    geom_point(aes(color = factor(gene)),
+               size = 0.25) +
+    geom_line(aes(color = factor(gene),
+                  group = interaction(gene, replicate),
+                  linetype = factor(replicate))) +
+    geom_line(aes(x = factor(hour), y = model, group = factor(gene))) +
+    #scale_color_brewer(palette = "Set1") +
+    labs(color = "Cluster") +
+    theme_classic() +
+    ylab("Expression (tpm)") +
+    xlab("Time (hours)") +
+    facet_wrap(~factor(gene, levels = .gene_names, 
+                       labels = .gene_names))
+}
+# tests for plotExpressionProfileWithPolynomial
+test_gene_idxs <- clustdf |> 
+  filter(environment == "immune" & signal_to_noise > 1 &
+           coef1 > 100 & coef2 < -10 & coef3 > 0) |> 
+  select(gene_name) |> pull()
+test_gene_idxs # Hrb27C, CG34166
+plotExpressionProfileWithPolynomial(.counts = counts$immune, 
+                                    .info = infodf$immune, 
+                                    .gene_idxs = test_gene_idxs,
+                                    .gene_names = c("Hrb27C", "CG34166"),
+                                    .polydf = filter(modeldf, environment == "immune"))
+
+
+################ Archive ################ 
+#### Ternary Plot ####
+# Archived b/c I didn't realize that by definition in 
+# Ternary plots, you can't be high in 2/3 variables --- 
+# If you are high in one variably you must be low in the other
+# Two b/c their values must sum to 100% (i.e. % clay, sand, organic for soil)
+# library(ggtern)
+# ggtern(data = plotdf,
+#        aes(x = immune_norm, y = dev_norm, z = oog_norm)) + # L = x, T = y, R = z
+#   geom_point(aes(color = williams_category), alpha = 1, size = 0.5) +
+#   geom_point(data = exampledf_dev,
+#              color = group_colors[exampledf_dev$williams_category],
+#              alpha = 1, size = 3) +
+#   geom_point(data = exampledf_immune,
+#              color = group_colors[exampledf_immune$williams_category],
+#              alpha = 1, size = 3) +
+#   geom_point(data = exampledf_immune2,
+#              color = group_colors[exampledf_immune2$williams_category],
+#              alpha = 1, size = 3) +
+#   geom_point(data = exampledf_immune3,
+#              color = "gold",
+#              alpha = 1, size = 3) +
+#   # facet_wrap(~factor(williams_category,
+#   #                    levels = c("Developmental_Non_Pleiotropic",
+#   #                               "Immune_Non_Pleiotropic",
+#   #                               "Pleiotropic",
+#   #                               "Other"),
+#   #                    labels = c("Developmental",
+#   #                               "Immune",
+#   #                               "Pleiotropic",
+#   #                               "Neither"))) +
+#   scale_color_manual(values = group_colors) +
+#   geom_Tline(Tintercept = 0.9) +
+#   geom_Lline(Lintercept = 0.9) +
+#   scale_L_continuous(limits = c(min(plotdf$immune_norm), max(plotdf$immune_norm))) +
+#   scale_T_continuous(limits = c(min(plotdf$dev_norm), max(plotdf$dev_norm))) +
+#   scale_R_continuous(limits = c(min(plotdf$oog_norm), max(plotdf$oog_norm))) +
+#   tern_limit(T = 1, L = 1, R = 1)
+
+
