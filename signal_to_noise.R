@@ -10,26 +10,29 @@ williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
 # because their strict threshold was based on 
 # expression, which we can make our own judgments on
 
-load("data/ClusteringImmune.RData")
+load("data/ImmuneCounts.RData")
 counts_immune <- counts
-clustdf_immune <- clustdf
+clustdf_immune <- tibble("gene_name" = counts_immune$gene_name,
+                         "environment" = "immune")
 infodf_immune <- tibble("sample_name" = colnames(counts_immune)[-1],
                         "replicate" = if_else(grepl("A", colnames(counts_immune)[-1]),
                                                     true = "A", false = "B"),
                         "hour" = parse_number(colnames(counts_immune)[-1]))
-rm(counts, clustdf, robust_cluster_genes)
+rm(counts)
 
-load("data/ClusteringDev.RData")
+load("data/DevCounts.RData")
 counts_dev <- counts
-clustdf_dev <- clustdf
-infodf_dev <- infodf |> rename("sample_name"="colname")
-rm(counts, clustdf, robust_cluster_genes, infodf)
+clustdf_dev <- tibble("gene_name" = counts_dev$gene_name,
+                      "environment" = "dev")
+infodf_dev <- infodf |> select(-sample_name) |> dplyr::rename("sample_name"="colname")
+rm(counts, infodf)
 
-load("data/ClusteringOog.RData")
+load("data/OogCounts.RData")
 counts_oog <- counts
-clustdf_oog <- clustdf
+clustdf_oog <- tibble("gene_name" = counts_oog$gene_name,
+                      "environment" = "oog")
 infodf_oog <- infodf
-rm(counts, clustdf, robust_cluster_genes, infodf)
+rm(counts, infodf)
 
 #### Limiting Oogenesis to WholeOvary ####
 samples_wholeOvary <- grep("^WholeOvary", colnames(counts_oog), value = TRUE)
@@ -38,11 +41,7 @@ infodf_oog <- filter(infodf_oog, sample_name %in% samples_wholeOvary)
 
 #### Combining datasets ####
 # combining clustering results
-clustdf_immune$environment <- "immune"
-clustdf_dev$environment <- "dev"
-clustdf_oog$environment <- "oog"
 clustdf <- bind_rows(clustdf_immune, clustdf_dev, clustdf_oog) |> 
-  select(gene_name, label, environment) |> 
   left_join(y = select(williams, FlyBaseID, 
                        Plei_allImmune_allDev),
             by = c("gene_name"="FlyBaseID"))
@@ -190,12 +189,14 @@ modeldf <- map2(clustdf$gene_name, clustdf$environment,
                   return(outdf)
                 }) |> purrr::reduce(.f = bind_rows)
 
-# adding modeling results to clustdf
+# checking for missing values
+sum(is.na(modeldf$signal_to_noise))
+# adding modeling results to clustdf ()
 clustdf <- left_join(clustdf, modeldf, by = c("gene_name", "environment"))
 
 sort(clustdf$signal_to_noise, decreasing = TRUE)[1:10] # some major outliers with huge SNR
 sort(clustdf$signal_to_noise, decreasing = FALSE)[1:20] # some major outliers, all in "Other" category
-plotdf <- filter(clustdf, signal_to_noise < 1e30 & signal_to_noise > 1e-30)
+plotdf <- filter(clustdf, signal_to_noise < 1e30)
 plotdf$williams_category <- factor(plotdf$williams_category,
                                    levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic",
                                               "Pleiotropic", "Other"),
@@ -205,12 +206,12 @@ group_colors <- c("Developmental"="#E41A1CFF",
                   "Immune"="#377EB8FF",
                   "Pleiotropic"="#984EA3FF",
                   "Neither"="#4DAF4AFF")
-p <- ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
+p <- ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise + 1e-10))) +
   #geom_jitter(aes(color = williams_category)) +
-  geom_violin(aes(fill = williams_category)) +
+  geom_violin(aes(fill = williams_category, group = williams_category)) +
   stat_summary(fun = "mean", geom = "point") +
   geom_hline(data = summarise(group_by(filter(plotdf, williams_category == "Neither"),
-                                       environment), meanSNR = mean(log2(signal_to_noise))),
+                                       environment), meanSNR = mean(log2(signal_to_noise + 1e-10))),
              aes(yintercept = meanSNR)) +
   stat_compare_means(comparisons = list(c("Developmental", "Neither"),
                                         c("Immune", "Neither"),
@@ -223,7 +224,7 @@ p <- ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise))) +
   xlab("gene category") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         legend.position = "none") +
-  ylim(c(log2(min(plotdf$signal_to_noise)), log2(max(plotdf$signal_to_noise)) + 7))
+  ylim(c(-10, log2(max(plotdf$signal_to_noise)) + 14))
 p
 # pdf("figures/violin.pdf", width = 5, height = 3.5)
 # p
@@ -292,7 +293,15 @@ test_devdf <- clustdf |> filter(mean >= 10 &
                                   signal_to_noise < 100 &
                                   environment == "dev")
 test_normSNR <- normalizeSNR(test_devdf$signal_to_noise)
-quantile(test_normSNR, q = c(0, 0.25, 0.5, 0.75, 1))
+quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
+test_immunedf <- clustdf |> filter(mean >= 10 & 
+                                     signal_to_noise < 100 &
+                                     environment == "immune")
+test_normSNR <- normalizeSNR(test_immunedf$signal_to_noise)
+quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
+# TODO: if we do this, probably not good to do a linear scale, everything gets piled
+# up at the 99th percentile
+# (currently we're doing dense_rank instead of normalizing)
 
 #### creating data frame where each gene has 1 row ####
 genedf <- clustdf |> 
