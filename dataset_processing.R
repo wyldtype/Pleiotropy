@@ -104,21 +104,24 @@ ggplot(plotdf, aes(x = libsize)) +
 # slight differences in libsize b/c immune already had lowly expressed filtered out,
 # but much more comparable
 
-#### Limiting to common set of genes ####
-common_genes <- intersect(immune_counts_tpm[,1], dev_counts_tpm[,1])
-common_genes <- intersect(common_genes, oog_counts_tpm[,1])
-length(common_genes)
-# also removing one annoying gene that becomes 0 in the immune counts rep A
-"FBgn0028519" %in% common_genes # if it's in the set, remove it with the line below:
-# common_genes <- setdiff(common_genes, "FBgn0028519")
+#### Currently Omitted: Limiting to common set of genes ####
+# # ANNA: this only seems necessary for clustering and removes genes that
+# # are lowly expressed in some datasets but not others, such as PGRP-SB1 ("FBgn0043578")
 
-# restricting to common genes
-immune_counts_tpm <- immune_counts_tpm[immune_counts_tpm[,1] %in% common_genes,]
-dim(immune_counts_tpm)
-dev_counts_tpm <- dev_counts_tpm[dev_counts_tpm[,1] %in% common_genes,]
-dim(dev_counts_tpm)
-oog_counts_tpm <- oog_counts_tpm[oog_counts_tpm[,1] %in% common_genes,]
-dim(oog_counts_tpm)
+# common_genes <- intersect(immune_counts_tpm[,1], dev_counts_tpm[,1])
+# common_genes <- intersect(common_genes, oog_counts_tpm[,1])
+# length(common_genes)
+# # also removing one annoying gene that becomes 0 in the immune counts rep A
+# "FBgn0028519" %in% common_genes # if it's in the set, remove it with the line below:
+# # common_genes <- setdiff(common_genes, "FBgn0028519")
+# 
+# # restricting to common genes
+# immune_counts_tpm <- immune_counts_tpm[immune_counts_tpm[,1] %in% common_genes,]
+# dim(immune_counts_tpm)
+# dev_counts_tpm <- dev_counts_tpm[dev_counts_tpm[,1] %in% common_genes,]
+# dim(dev_counts_tpm)
+# oog_counts_tpm <- oog_counts_tpm[oog_counts_tpm[,1] %in% common_genes,]
+# dim(oog_counts_tpm)
 
 #### Dataset-specific sample processing & saving ####
 
