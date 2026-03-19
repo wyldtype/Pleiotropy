@@ -1,6 +1,8 @@
 sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl", "readr", "stringr", "plotly", "lmtest", "pheatmap"), FUN = require,
        character.only = TRUE)
 
+source("utils.r")
+
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
                       sheet = 2, na = "NA") |> 
   select(FlyBaseID, Plei_allImmune_allDev) 
@@ -55,6 +57,9 @@ counts <- list("immune" = counts_immune,
 infodf <- list("immune" = infodf_immune,
                "dev" = infodf_dev,
                "oog" = infodf_oog)
+
+#### Saving counts and info lists ####
+save(counts, infodf, file = "data/CountsList.RData")
 
 #### Parsing sample metadata ####
 # getter function for any column in the infodf that is needed
@@ -225,31 +230,6 @@ p
 # dev.off()
 
 #### Inspecting individual genes ####
-plotExpressionProfile <- function(.counts, .info, .gene_idxs, .gene_names) {
-  countdf <- map2(.gene_idxs, .gene_names, \(g, nm) {
-    outdf <- tibble(sample = colnames(.counts)[-1],
-                    gene_vec = as.numeric(.counts[.counts$gene_name == g, -1]))
-    names(outdf) <- c("sample_name", nm)
-    return(outdf)
-  }) |> purrr::reduce(.f = left_join, by = "sample_name")
-  plotdf <- countdf |> pivot_longer(cols = setdiff(names(countdf), "sample_name"),
-                                    names_to = "gene", values_to = "expr") |> 
-    left_join(y = .info, by = "sample_name")
-  ggplot(plotdf, aes(x = factor(hour), y = expr)) +
-    geom_point(aes(color = factor(gene)),
-               size = 0.25) +
-    geom_line(aes(color = factor(gene),
-                  group = interaction(gene, replicate),
-                  linetype = factor(replicate))) +
-    #scale_color_brewer(palette = "Set1") +
-    labs(color = "Cluster") +
-    theme_classic() +
-    ylab("Expression (tpm)") +
-    xlab("Time (hours)") +
-    facet_wrap(~factor(gene, levels = .gene_names, 
-                       labels = .gene_names))
-}
-
 # looking at our massive outliers
 # high outliers
 test_highSNR_df <- clustdf |> arrange(desc(signal_to_noise)) |> 
@@ -314,7 +294,70 @@ test_devdf <- clustdf |> filter(mean >= 10 &
 test_normSNR <- normalizeSNR(test_devdf$signal_to_noise)
 quantile(test_normSNR, q = c(0, 0.25, 0.5, 0.75, 1))
 
-#### Which genes have the largest jump in signal to noise between datasets? ####
+#### creating data frame where each gene has 1 row ####
+genedf <- clustdf |> 
+  select(gene_name, environment, signal_to_noise, williams_category, mean) |> 
+  pivot_wider(id_cols = c("gene_name", "williams_category"),
+              names_from = "environment",
+              values_from = c("signal_to_noise", "mean")) |> 
+  # if a gene is missing/below expression threshold for a dataset, 
+  # we set it to mean = 0 and SNR = 0 instead of NA
+  mutate(signal_to_noise_immune = coalesce(signal_to_noise_immune, 0), 
+         signal_to_noise_dev = coalesce(signal_to_noise_dev, 0),
+         signal_to_noise_oog = coalesce(signal_to_noise_oog, 0),
+         mean_immune = coalesce(mean_immune, 0),
+         mean_dev = coalesce(mean_dev, 0),
+         mean_oog = coalesce(mean_oog, 0))
+# ranking SNR so it is comparable between datasets
+nGenes <- nrow(genedf)
+genedf$immune_rank <- dplyr::dense_rank(desc(genedf$signal_to_noise_immune)) # highest SNR = 1st rank
+genedf$dev_rank <- dplyr::dense_rank(desc(genedf$signal_to_noise_dev))
+genedf$oog_rank <- dplyr::dense_rank(desc(genedf$signal_to_noise_oog))
+# rank threshold with uniform SNR cutoff
+SNR_thresh <- 2
+immune_rank_thresh <- max(genedf$immune_rank[which(genedf$signal_to_noise_immune > SNR_thresh)])
+dev_rank_thresh <- max(genedf$dev_rank[which(genedf$signal_to_noise_dev > SNR_thresh)])
+oog_rank_thresh <- max(genedf$oog_rank[which(genedf$signal_to_noise_oog > SNR_thresh)])
+# # rank threshold with uniform nGenes
+# immune_rank_thresh <- nGenes*0.25 # top 25% of genes
+# dev_rank_thresh <- nGenes*0.25
+# oog_rank_thresh <- nGenes*0.25
+
+# assigning gene its variability category by SNR rank
+genedf$max_snr <- map(c(1:nrow(genedf)), \(i) {
+  rank_imm <- genedf$immune_rank[i]
+  rank_dev <- genedf$dev_rank[i]
+  rank_oog <- genedf$oog_rank[i]
+  if (rank_imm > immune_rank_thresh) {
+    rank_imm <- nGenes
+  }
+  if (rank_dev > dev_rank_thresh) {
+    rank_dev <- nGenes
+  }
+  if (rank_oog > oog_rank_thresh) {
+    rank_oog <- nGenes
+  }
+  if (rank_imm > immune_rank_thresh &
+      rank_dev > dev_rank_thresh & 
+      rank_oog > oog_rank_thresh) {
+    return("low_SNR")
+  }
+  rank_vec <- c(rank_imm,
+                rank_dev,
+                rank_oog)
+  return(c("immune", "dev", "oog")[which.min(rank_vec)])
+}) |> unlist()
+
+# does the gene have variable expression in the conditions(s) where it plays a role?
+# Developmental_Non_Pleiotropic: Embryonic Development or Oogenesis
+# Immune_Non_Pleiotropic: Imd Challenge
+# PLeiotropic: (Embryonic Development or Oogenesis) AND Imd Challenge
+
+#### saving ####
+save(clustdf, genedf, SNR_thresh, file = "data/SignalToNoise.RData")
+
+###################### Exploration ###################### 
+#### 3D scatterplot of SNR ranks in each dataset ####
 plotdf <- clustdf |> # filter(mean >= 10 & signal_to_noise < 100) |> 
   filter(williams_category != "Other") |>
   select(all_of(c("gene_name", "environment", "williams_category", "signal_to_noise"))) |> 
@@ -385,17 +428,93 @@ ggarrange(p_immune, p_dev, p_oog, nrow = 1, ncol = 3,
 ggplot(filter(clustdf, signal_to_noise < 1e30 & signal_to_noise > 1e-30), 
        aes(x = log2(signal_to_noise), y = -log10(lrt_pval))) +
   geom_point(aes(color = environment)) +
+  geom_vline(xintercept = 1) + # (log2(2) = 1)
   facet_wrap(~environment)
 
-# By an SNR of 1, all the pvalues clearly "lift off" of the x-axis, so we can
-# use that as our cutoff for variability. Intuitively it makes sense, more
-# signal to noise
+# By an SNR of 2, all the pvalues clearly "lift off" of the x-axis, so we can
+# use that as our cutoff for variability. Intuitively it makes sense, 
+# twice as much signal than noise
 
 # There has to be a mathematical reason why the likelihood ratio results and the 
-# sum of squares ratio are monotonically related, but we can deal with that later
+# sum of squares ratio are monotonically related, they're essentially both ratios
+# of complex vs simple models, but slightly different ones
+
+#### Which dataset does each gene have its more variable expression in? ####
+# max_snr assigns each gene to the dataset where it has the highest SNR 
+# (by rank among all genes, rank of 1 is the gene with the highest SNR in that dataset)
+plotdf <- group_by(genedf, max_snr, williams_category) |> 
+  summarise(n = n()) |> ungroup()
+plotdf_counts <- group_by(genedf, williams_category) |> 
+  summarise(n = n()) |> ungroup()
+plotdf$williams_category <- factor(plotdf$williams_category, 
+                                   levels = c("Developmental_Non_Pleiotropic",
+                                              "Immune_Non_Pleiotropic",
+                                              "Pleiotropic",
+                                              "Other"))
+plotdf$max_snr <- factor(plotdf$max_snr, 
+                              levels = c("dev", "immune", "oog", "low_SNR"),
+                              labels = c("Embryonic Development",
+                                         "Imd Challenge",
+                                         "Oogenesis",
+                                         "None (lowly-varying)"))
+# stacked bar proportions
+ggplot(plotdf, aes(x = williams_category, y = n)) +
+  geom_bar(aes(fill = max_snr), stat = "identity", position = "fill") +
+  geom_text(data = plotdf_counts, aes(label = paste0("n = ", n),
+                                      x = williams_category, y = 1.1)) +
+  xlab("function of gene") +
+  scale_fill_brewer(name = "environment of most\nvariable expression",
+                    palette = "Set1") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+# But some genes may have plenty of variability in multiple datasets, so we should
+# also check a Venn diagram visualization
+library(ggVennDiagram)
+# this hurts my head every time
+# instead of tidy data, we have a named list where each name is a dataset
+# that each gene can or cannot have variable expression in
+# the items in the list are genes that do have variable expression in that dataset
+plotVenn <- function(.df, .williams_category) {
+  plotlist <- list(Embryonic_Development = .df |> 
+                         filter(williams_category == .williams_category) |> 
+                         filter(dev_rank < dev_rank_thresh) |> 
+                         select(gene_name) |> pull(),
+                       Imd_Challenge = .df |> 
+                         filter(williams_category == .williams_category) |> 
+                         filter(immune_rank < immune_rank_thresh) |> 
+                         select(gene_name) |> pull(),
+                       Oogenesis = .df |> 
+                         filter(williams_category == .williams_category) |> 
+                         filter(oog_rank < oog_rank_thresh) |> 
+                         select(gene_name) |> pull())
+  p <- ggVennDiagram(plotlist) + scale_fill_gradient(low="grey90",high = "red")
+  return(p)
+}
+
+plotVenn(genedf, .williams_category = "Developmental_Non_Pleiotropic") +
+  ggtitle("Developmental, non-pleiotropic genes") # 4% immune
+plotVenn(genedf, .williams_category = "Immune_Non_Pleiotropic") +
+  ggtitle("Immune, non-pleiotropic genes") # 16% immune
+plotVenn(genedf, .williams_category = "Pleiotropic") +
+  ggtitle("Pleiotropic genes")# 8% immune
+
+# Conclusion: There are differences in proportion for each class of gene, but
+# modest ones. Especially for the developmental dataset, it is important to 
+# distinguish between "active" and "passive" expression shifts. "Active" shifts
+# are created by the genes that need to change expression because they
+# have a role in the process. "Passive" are genes that change expression as a
+# result of the "active" group changing. These genes theoretically would not need
+# to change expression if there was infinite transcriptional machinery in the cell
+
+# The way we will distinguish these classes is based on Williams et al. functional
+# annotation. "Active" genes are the genes williams et al. annotates as having
+# a role in that process (Development, Immune, or Both). "Passive" are the genes that
+# are also changing expression but don't have a role in that environment
+# (i.e. Immune_Non_Pleiotropic genes that
+# have variable expression in Embryonic Development)
 
 #### Clustering variable genes based on polynomial coefficients ####
-
 # plot polynomial curve
 fitCurve <- function(.coefs, .x_values) {
   nterms <- length(.coefs) - 1
