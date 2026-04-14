@@ -138,7 +138,8 @@ plotdf <- tibble(pc1 = pca$x[,"PC1"], pc2 = pca$x[,"PC2"],
                  pc3 = pca$x[,"PC3"], pc4 = pca$x[,"PC4"],
                  label = colnames(counts)[-1])
 plotdf$timepoint <- parse_number(plotdf$label)
-plotdf$hour <- c(0, 1, 2, 4, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120)[plotdf$timepoint]
+schlamp_hour_vec <- c(0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 30, 36, 42, 48, 72, 96, 120) # 21 timepoints
+plotdf$hour <- schlamp_hour_vec[plotdf$timepoint]
 # PC1 and PC2
 ggplot(plotdf, aes(x = pc1, y = pc2)) +
   geom_text(aes(label = label, color = timepoint)) +
@@ -159,10 +160,16 @@ setdiff(parse_number(colnamesA), parse_number(colnamesB))
 setdiff(parse_number(colnamesB), parse_number(colnamesA))
 # conclusion: B is missing timepoint 4
 
-# removing timepoint 6 (outlier), 4 (missing)
+# removing timepoint 6 (5 hours post injection, outlier), and 4 (3 hours post injection, missing one replicate)
 counts <- counts[,setdiff(colnames(counts), c("6A", "6B", "4A"))]
 
-save(counts, file = "data/ImmuneCounts.RData")
+# storing metadata
+infodf <- tibble("sample_name" = colnames(counts)[-1],
+                 "replicate" = if_else(grepl("A", colnames(counts)[-1]),
+                                       true = "A", false = "B"),
+                 "hour" = sclamp_hour_vec[parse_number(colnames(counts)[-1])])
+
+save(counts, infodf, file = "data/ImmuneCounts.RData")
 
 #### Embryogenesis ####
 counts <- dev_counts_tpm
