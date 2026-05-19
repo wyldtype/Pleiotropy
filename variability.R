@@ -256,7 +256,3 @@ plotlist <- plotExpressionProfileAllEnvironments(.gene_idxs = c(diap1, diap2),
                                                  .color_vec = c(plei_color, plei_color),
                                                  .environments = c("dev", "immune"))
 ggarrange(plotlist = plotlist, nrow = 2, ncol = 1, legend = "none")
-
-#### Can we assign pleiotropic genes to Development or Immune based on enhancers/expression? ####
-# Our enhancer exploration has 
-
