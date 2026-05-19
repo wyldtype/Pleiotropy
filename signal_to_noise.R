@@ -10,6 +10,11 @@ williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
 # because their strict threshold was based on 
 # expression, which we can make our own judgments on
 
+# TODO: clustdf no longer contains any clustering info and it is confusing
+# To refer to it as clustdf. Either change it to longdf or envdf, something
+# to indicate genes have multiple rows, and probably no longer output it in Signal_to_Noise.RData
+
+
 load("data/ImmuneCounts.RData")
 counts_immune <- counts
 clustdf_immune <- tibble("gene_name" = counts_immune$gene_name,
