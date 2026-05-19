@@ -1,8 +1,79 @@
 sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr", "stringr"), FUN = require,
        character.only = TRUE)
-load("data/ClusteringImmune.RData")
+
+# pleiotropic gene classifications
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
                       sheet = 2, na = "NA") 
+
+# flybase gene summaries
+drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
+                                comment = "##")
+colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
+
+# genes plus SNR values
+load("data/SignalToNoise.RData")
+
+#### Gene summaries for each of our pleiotropic genes ####
+# number of pleiotropic genes in Williams et al.
+williams |> select(Plei_allImmune_allDev) |> table() # 354
+# joining these to gene descriptions from flybase
+plotdf <- left_join(filter(williams, Plei_allImmune_allDev == "Pleiotropic"),
+                    drosophila_lookup,
+                    by = "FlyBaseID")
+plotdf$Plei_allImmune_allDev |> table() # Still 354
+
+plotdf <- filter(plotdf, FlyBaseID %in% genedf$gene_name) |> 
+  select(FlyBaseID, Gene_Symbol, Summary)
+plotdf |> nrow() # Now 347, a few couldn't have an SNR calculated (TODO: likely div by 0, but check)
+
+# Dev/Plei needing to have embryonic_dev:
+williams_emb <- williams |> filter(GO_Dev_Emb == "embryonic_dev" | 
+                                     Plei_allImmune_allDev == "Immune_Non_Pleiotropic") |> 
+  select(FlyBaseID, Plei_allImmune_allDev)
+williams_emb$Plei_allImmune_allDev |> table()
+left_join(williams_emb,
+          select(drosophila_lookup, FlyBaseID, Gene_Symbol, Summary),
+          by = "FlyBaseID") |> write_csv(file = "data/pleiotropic_emb.csv")
+
+# 347 genes we mentioned in abstract
+filter(williams, Plei_allImmune_allDev == "Pleiotropic" & 
+         FlyBaseID %in% genedf$gene_name) |> 
+  select(FlyBaseID) |> 
+  left_join(y = select(drosophila_lookup, FlyBaseID, Gene_Symbol, Summary),
+            by = "FlyBaseID") |> write_csv(file = "data/pleiotropic_347.csv")
+
+#### Bar plots of numbers of genes in each williams category ####
+plotdf <- left_join(genedf, 
+                    dplyr::rename(williams_emb, c("williams_emb"="Plei_allImmune_allDev")), 
+                    by = c("gene_name"="FlyBaseID")) |> 
+  mutate(williams_emb = coalesce(williams_emb, "Other"))
+ggplot(filter(plotdf, williams_emb != "Other"), aes(x = williams_emb)) +
+  geom_bar()
+
+#### Metascape ####
+outdf <- genedf |> 
+  select(gene_name, williams_category) |> 
+  filter(williams_category != "Other") |> 
+  arrange(williams_category) |> 
+  pivot_wider(names_from = "williams_category",
+              values_from = "gene_name",
+              values_fn = list)
+# oh how my tidyverse heart breaks to put these in this format
+# filling in the gene lists for non-Dev genes with blanks so they will be the same length
+dev_list <- unlist(outdf$Developmental_Non_Pleiotropic)
+immune_list <- unlist(outdf$Immune_Non_Pleiotropic)
+immune_list <- c(immune_list, rep("", times = length(dev_list) - length(immune_list)))
+plei_list <- unlist(outdf$Pleiotropic)
+plei_list <- c(plei_list, rep("", times = length(dev_list) - length(plei_list)))
+metascape <- bind_cols("Developmental_Non_Pleiotropic" = dev_list,
+                       "Immune_Non_Pleiotropic" = immune_list,
+                       "Pleiotropic" = plei_list)
+write_csv(metascape, file = "data/metascape/metascape.csv", col_names = TRUE)
+
+
+
+#### Potentially archived from here down: clustering-related ####
+#load("data/ClusteringImmune.RData")
 
 #### Pie charts of cluster membership for Immune, Developmental, and Pleiotropic genes ####
 
