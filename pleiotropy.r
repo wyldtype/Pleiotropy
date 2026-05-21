@@ -4,26 +4,11 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "purrr", "readxl", "readr", "str
 # util functions
 source("utils.r")
 
-# pleiotropic gene classifications
-williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
-                      sheet = 2, na = "NA")
-# Adding "most conservative option" which was not looked at in Williams et al. for some reason: 
-# the conservative definition of development (embryonic development)
-# plus the conservative definition of immune (immune functional annotation, not immune response)
-williams$Plei_allImmune_embDev <- if_else(williams$Plei_allImmune_allDev == "Immune_Non_Pleiotropic",
-                                          true = "Immune_Non_Pleiotropic",
-                                          false = if_else(williams$GO_Dev_Emb == "embryonic_dev",
-                                                          true = williams$Plei_immuneResponse_embDev,
-                                                          false = NA))
-
-# flybase gene summaries
-drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
-                                comment = "##")
-colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
+# global objects
+source("global.r")
 
 # genes plus SNR values
 load("data/SignalToNoise.RData")
-
 
 #### Gene summaries for each of our pleiotropic genes ####
 # number of pleiotropic genes in Williams et al.

@@ -1,10 +1,3 @@
-#### colors for plotting ####
-ColorValues <- c("Developmental_Non_Pleiotropic"="#F8766D",
-                 "Pleiotropic"="#619CFF",
-                 "Immune_Non_Pleiotropic"="#00BA38",
-                 "Other"="grey80")
-
-#### plotExpressionProfile ####
 plotExpressionProfile <- function(.counts, .info, .gene_idxs, .gene_names) {
   countdf <- map2(.gene_idxs, .gene_names, \(g, nm) {
     outdf <- tibble(sample = colnames(.counts)[-1],
@@ -31,7 +24,6 @@ plotExpressionProfile <- function(.counts, .info, .gene_idxs, .gene_names) {
                        labels = .gene_names))
 }
 
-#### plotExpressionProfileAllEnvironments ####
 plotExpressionProfileAllEnvironments <- function(.gene_idxs, .gene_names,
                                                  .environments = c("immune", "dev", "oog"),
                                                  .color_vec = scales::hue_pal()(length(.gene_idxs))) {

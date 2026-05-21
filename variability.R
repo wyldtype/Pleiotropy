@@ -3,24 +3,10 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl",
 
 # loading counts and functions
 source("utils.r")
+source("global.r")
 load("data/CountsList.RData")
 
-# williams dataset of gene functions
-williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
-                      sheet = 2, na = "NA")
-# Adding "most conservative option" which was not looked at in Williams et al. for some reason: 
-# the conservative definition of development (embryonic development)
-# plus the conservative definition of immune (immune functional annotation, not immune response)
-williams$Plei_allImmune_embDev <- if_else(williams$Plei_allImmune_allDev == "Immune_Non_Pleiotropic",
-                                          true = "Immune_Non_Pleiotropic",
-                                          false = if_else(williams$GO_Dev_Emb == "embryonic_dev",
-                                                          true = williams$Plei_immuneResponse_embDev,
-                                                          false = NA))
-
-# immune gene names (would be nice to just make this a comprehensive gene name lookup table)
-drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
-                                comment = "##")
-colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
+# getter functions
 getSymbol <- function(.flybase) {
   drosophila_lookup$Gene_Symbol[drosophila_lookup$FlyBaseID == .flybase]
 }
