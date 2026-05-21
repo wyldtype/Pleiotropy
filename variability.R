@@ -7,8 +7,15 @@ load("data/CountsList.RData")
 
 # williams dataset of gene functions
 williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
-                      sheet = 2, na = "NA") |> 
-  select(FlyBaseID, Plei_allImmune_allDev) 
+                      sheet = 2, na = "NA")
+# Adding "most conservative option" which was not looked at in Williams et al. for some reason: 
+# the conservative definition of development (embryonic development)
+# plus the conservative definition of immune (immune functional annotation, not immune response)
+williams$Plei_allImmune_embDev <- if_else(williams$Plei_allImmune_allDev == "Immune_Non_Pleiotropic",
+                                          true = "Immune_Non_Pleiotropic",
+                                          false = if_else(williams$GO_Dev_Emb == "embryonic_dev",
+                                                          true = williams$Plei_immuneResponse_embDev,
+                                                          false = NA))
 
 # immune gene names (would be nice to just make this a comprehensive gene name lookup table)
 drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
@@ -27,46 +34,61 @@ getFlyBaseID("PGRP-SB1")
 load("data/SignalToNoise.RData")
 SNR_thresh # decided in signal_to_noise.R
 
-#### Are immune + pleiotropic genes more variable than dev genes in Imd challenge? ####
-# In the adult, there aren't as many widespread changes in expression,
-# so only the genes that need to change are changing
-plotdf <- genedf |> select(signal_to_noise_immune, signal_to_noise_dev, williams_category) |> 
-  filter(williams_category != "Other") |> unique()
-p_imd <- ggplot(plotdf, aes(x = williams_category, y = signal_to_noise_immune)) +
-  geom_boxplot(aes(fill = williams_category)) +
-  stat_compare_means(comparisons = list(c("Developmental_Non_Pleiotropic", "Pleiotropic"),
-                                        c("Immune_Non_Pleiotropic", "Pleiotropic"),
-                                        c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic"))) +
-  theme_classic() +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
-  ylab("Signal to noise - Imd challenge")
-p_imd
-ggsave(p_imd, filename = "figures/immune_variability_box.png",
-       width = 3, height = 7)
-
-# this is in contrast to development, where most genes are quite variable
-p_dev <- ggplot(plotdf, aes(x = williams_category, y = signal_to_noise_dev)) +
-  geom_boxplot(aes(fill = williams_category)) +
-  stat_compare_means(comparisons = list(c("Developmental_Non_Pleiotropic", "Pleiotropic"),
-                                        c("Immune_Non_Pleiotropic", "Pleiotropic"),
-                                        c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic"))) +
-  theme_classic() +
-  theme(legend.position = "none",
-        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
-  ylab("Signal to noise - Embryonic Development")
-p_dev
-ggsave(p_dev, filename = "figures/dev_variability_box.png",
-       width = 3, height = 7)
-
 #### Example genes from Williams et al. ####
 
 ### Expression of Imd components from Williams et al. figure in 
 # Imd challenge, Embyonic Dev, and Oogenesis
-immune_color <- "#F04D23"
-plei_color <- "#0083C3"
-none_color <- "grey60"
 
+# Our colors
+immune_color <- ColorValues["Immune_Non_Pleiotropic"] |> as.character()
+plei_color <- ColorValues["Pleiotropic"] |> as.character()
+dev_color <- ColorValues["Developmental_Non_Pleiotropic"] |> as.character()
+none_color <- ColorValues["Other"] |> as.character()
+
+### Example expression and SNR values for BAD poster 2026
+# Ideal: 1 dev, 1 immune, 2 plei genes in dev and immune environment
+# dev gene is more variable in dev, immune in immune
+# 1 plei more vairable in dev, 1 in immune
+# filtering for example genes (change filters to select different genes):
+genedf |> left_join(select(williams, FlyBaseID, Plei_allImmune_embDev),
+                    by = c("gene_name"="FlyBaseID")) |> 
+  filter(signal_to_noise_immune > 0.5 &
+           Plei_allImmune_embDev == "Immune_Non_Pleiotropic" &
+           mean_dev > 0, mean_immune > 30) |> 
+  left_join(select(drosophila_lookup, FlyBaseID, Gene_Symbol, Summary),
+            by = c("gene_name"="FlyBaseID")) |> 
+  View()
+# example genes:
+imm_gene <- getFlyBaseID("glob1")
+dev_gene <- getFlyBaseID("fkh")
+plei_gene <- getFlyBaseID("Rap1")
+# corresponding SNRs
+imm_gene_title <- paste("globin 1, SNR_imd =", 
+                        round(genedf$signal_to_noise_immune[genedf$gene_name == imm_gene], digits = 2),
+                        "SNR_dev =", 
+                        round(genedf$signal_to_noise_dev[genedf$gene_name == imm_gene], digits = 2))
+dev_gene_title <- paste("forkhead, SNR_imd =", 
+                        round(genedf$signal_to_noise_immune[genedf$gene_name == dev_gene], digits = 2),
+                        "SNR_dev =", 
+                        round(genedf$signal_to_noise_dev[genedf$gene_name == dev_gene], digits = 2))
+plei_gene_title <- paste("Rap1, SNR_imd =", 
+                        round(genedf$signal_to_noise_immune[genedf$gene_name == plei_gene], digits = 2),
+                        "SNR_dev =", 
+                        round(genedf$signal_to_noise_dev[genedf$gene_name == plei_gene], digits = 2))
+
+# plot for poster
+ggarrange(plotlist = plotExpressionProfileAllEnvironments(.gene_idxs = c(imm_gene, dev_gene, pleiImm_gene), 
+                                     .gene_names = c(imm_gene_title, dev_gene_title, plei_gene_title),
+                                     .environments = c("dev", "immune"),
+                                     .color_vec = c(immune_color, dev_color, plei_color)),
+          nrow = 2, ncol = 1, legend = "none")
+ggsave(filename = "figures/example_SNRs.png", width = 10, height = 7)
+
+### Plots to match Williams et al. pathways figure
+# # Williams et al. colors
+# immune_color <- "#F04D23"
+# plei_color <- "#0083C3"
+# none_color <- "grey60"
 ### Extracellular
 pgrp_sd <- getFlyBaseID("PGRP-SD")
 pgrp_sb1 <- getFlyBaseID("PGRP-SB1")
@@ -256,3 +278,212 @@ plotlist <- plotExpressionProfileAllEnvironments(.gene_idxs = c(diap1, diap2),
                                                  .color_vec = c(plei_color, plei_color),
                                                  .environments = c("dev", "immune"))
 ggarrange(plotlist = plotlist, nrow = 2, ncol = 1, legend = "none")
+
+
+#### Determining immune/dev variable quadrants ####
+### Non-conservative/all-dev
+plotdf <- genedf |> filter(williams_category != "Other")
+
+# picking variability thresholds
+threshdf <- plotdf |> select(gene_name, williams_category, 
+                 signal_to_noise_immune, signal_to_noise_dev) |> 
+  pivot_longer(cols = c("signal_to_noise_immune", "signal_to_noise_dev"),
+               names_to = "environment", values_to = "signal_to_noise", 
+               names_prefix = "signal_to_noise_") |>
+  group_by(environment, williams_category) |> 
+  summarise(quant50 = quantile(signal_to_noise, probs = 0.5))
+SNR_thresh_immune <- threshdf |> 
+  filter(environment == "immune" & 
+           williams_category == "Immune_Non_Pleiotropic") |> 
+  select(quant50) |> pull()
+SNR_thresh_dev <- threshdf |> 
+  filter(environment == "dev" & 
+           williams_category == "Developmental_Non_Pleiotropic") |> 
+  select(quant50) |> pull()
+# QC: should be same number of genes less than and equal to threshold
+sum(genedf$signal_to_noise_immune[genedf$williams_category == "Immune_Non_Pleiotropic"] > SNR_thresh_immune)
+sum(genedf$signal_to_noise_immune[genedf$williams_category == "Immune_Non_Pleiotropic"] < SNR_thresh_immune)
+sum(genedf$signal_to_noise_dev[genedf$williams_category == "Developmental_Non_Pleiotropic"] > SNR_thresh_dev)
+sum(genedf$signal_to_noise_dev[genedf$williams_category == "Developmental_Non_Pleiotropic"] < SNR_thresh_dev)
+
+# We're doing faceted histograms instead of scatterplots
+# so that the SNR=0 genes can be in the same plot, and the 50-50 cutoff
+# can be more apparent
+p_dev <- ggplot(plotdf, aes(x = signal_to_noise_dev)) +
+  geom_histogram(aes(fill = williams_category)) +
+  geom_text(data = tibble(williams_category = c("Developmental_Non_Pleiotropic",
+                                                "Immune_Non_Pleiotropic",
+                                                "Pleiotropic"),
+                          SNRthreshold = paste("SNR threshold = ",
+                                               round(SNR_thresh_dev, digits = 2))),
+            aes(label = SNRthreshold, x = SNR_thresh_dev + 1, y = 600),
+            hjust = 0) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nAbove = sum(signal_to_noise_dev > SNR_thresh_dev)),
+            aes(label = paste("# above = ", nAbove), y = 450, x = 25)) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nBelow = sum(signal_to_noise_dev <= SNR_thresh_dev)),
+            aes(label = paste("# below = ", nBelow), y = 350, x = 25)) +
+  facet_wrap(~williams_category) +
+  geom_vline(xintercept = SNR_thresh_dev) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab("Signal to noise ratio, Embryonic development") +
+  ylab("number of genes")
+p_immune <- ggplot(plotdf, aes(x = signal_to_noise_immune)) +
+  geom_histogram(aes(fill = williams_category)) +
+  geom_text(data = tibble(williams_category = c("Developmental_Non_Pleiotropic",
+                                                "Immune_Non_Pleiotropic",
+                                                "Pleiotropic"),
+                          SNRthreshold = paste("SNR threshold = ",
+                                               round(SNR_thresh_immune, digits = 2))),
+            aes(label = SNRthreshold, x = SNR_thresh_immune + 1, y = 750),
+            hjust = 0) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nAbove = sum(signal_to_noise_immune > SNR_thresh_immune)),
+            aes(label = paste("# above = ", nAbove), y = 450, x = 10)) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nBelow = sum(signal_to_noise_immune <= SNR_thresh_immune)),
+            aes(label = paste("# below = ", nBelow), y = 350, x = 10)) +
+  facet_wrap(~williams_category) +
+  geom_vline(xintercept = SNR_thresh_immune) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab("Signal to noise ratio, Imd challenge") +
+  ylab("number of genes")
+ggarrange(p_dev, p_immune, nrow = 2, ncol = 1)
+ggsave(filename = "figures/SNR_histograms.png", width = 7, height = 5)
+
+# Accompanying stacked barplot of counts per williams category
+plotdf_var <- plotdf |> 
+  mutate(above_dev = signal_to_noise_dev > SNR_thresh_dev,
+         above_immune = signal_to_noise_immune > SNR_thresh_immune) |> 
+  mutate(var_group = if_else(above_dev,
+                             true = if_else(above_immune,
+                                            true = "var_both",
+                                            false = "var_dev"),
+                             false = if_else(above_immune,
+                                             true = "var_immune",
+                                             false = "var_neither")))
+ggplot(plotdf_var, aes(y = factor(williams_category,
+                                  levels = c("Developmental_Non_Pleiotropic",
+                                             "Pleiotropic",
+                                             "Immune_Non_Pleiotropic")))) +
+  geom_bar(aes(fill = var_group), position = "fill", stat = "count") +
+  scale_fill_brewer(palette = "Spectral") +
+  theme_classic() +
+  ylab("") +
+  xlab("proportion of genes")
+ggsave(filename = "figures/SNR_stackedBar.png", width = 7, height = 1.5)
+
+### Conservative/embryonic (not sure if we need this b/c all the points are still included in the non-conservative version)
+plotdf <- genedf |> 
+  left_join(select(williams, FlyBaseID, Plei_allImmune_embDev),
+            by = c("gene_name"="FlyBaseID")) |> 
+  filter(!is.na(Plei_allImmune_embDev))
+plotdf$williams_category <- plotdf$Plei_allImmune_embDev
+
+# picking variability thresholds
+threshdf <- plotdf |> select(gene_name, williams_category, 
+                             signal_to_noise_immune, signal_to_noise_dev) |> 
+  pivot_longer(cols = c("signal_to_noise_immune", "signal_to_noise_dev"),
+               names_to = "environment", values_to = "signal_to_noise", 
+               names_prefix = "signal_to_noise_") |>
+  group_by(environment, williams_category) |> 
+  summarise(quant50 = quantile(signal_to_noise, probs = 0.5))
+SNR_thresh_immune <- threshdf |> 
+  filter(environment == "immune" & 
+           williams_category == "Immune_Non_Pleiotropic") |> 
+  select(quant50) |> pull()
+SNR_thresh_dev <- threshdf |> 
+  filter(environment == "dev" & 
+           williams_category == "Developmental_Non_Pleiotropic") |> 
+  select(quant50) |> pull()
+# QC: should be same number of genes less than and greater than threshold
+sum(plotdf$signal_to_noise_immune[plotdf$williams_category == "Immune_Non_Pleiotropic"] > SNR_thresh_immune)
+sum(plotdf$signal_to_noise_immune[plotdf$williams_category == "Immune_Non_Pleiotropic"] <= SNR_thresh_immune)
+sum(plotdf$signal_to_noise_dev[plotdf$williams_category == "Developmental_Non_Pleiotropic"] > SNR_thresh_dev)
+sum(plotdf$signal_to_noise_dev[plotdf$williams_category == "Developmental_Non_Pleiotropic"] <= SNR_thresh_dev)
+
+# Scatterplots look too messy. We're doing faceted histograms instead
+# so that the SNR=0 genes can be in the same plot and the 50-50 cutoff
+# can be more apparent
+p_dev <- ggplot(plotdf, aes(x = signal_to_noise_dev)) +
+  geom_histogram(aes(fill = williams_category)) +
+  geom_text(data = tibble(williams_category = c("Developmental_Non_Pleiotropic",
+                                                "Immune_Non_Pleiotropic",
+                                                "Pleiotropic"),
+                          SNRthreshold = paste("SNR threshold = ",
+                                               round(SNR_thresh_dev, digits = 2))),
+            aes(label = SNRthreshold, x = SNR_thresh_dev + 1, y = 200),
+            hjust = 0) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nAbove = sum(signal_to_noise_dev > SNR_thresh_dev)),
+            aes(label = paste("# above = ", nAbove), y = 150, x = 13)) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nBelow = sum(signal_to_noise_dev <= SNR_thresh_dev)),
+            aes(label = paste("# below = ", nBelow), y = 125, x = 13)) +
+  facet_wrap(~williams_category) +
+  geom_vline(xintercept = SNR_thresh_dev) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab("Signal to noise ratio, Embryonic development") +
+  ylab("number of genes")
+p_immune <- ggplot(plotdf, aes(x = signal_to_noise_immune)) +
+  geom_histogram(aes(fill = williams_category)) +
+  geom_text(data = tibble(williams_category = c("Developmental_Non_Pleiotropic",
+                                                "Immune_Non_Pleiotropic",
+                                                "Pleiotropic"),
+                          SNRthreshold = paste("SNR threshold = ",
+                                               round(SNR_thresh_immune, digits = 2))),
+            aes(label = SNRthreshold, x = SNR_thresh_immune + 1, y = 200),
+            hjust = 0) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nAbove = sum(signal_to_noise_immune > SNR_thresh_immune)),
+            aes(label = paste("# above = ", nAbove), y = 150, x = 6)) +
+  geom_text(data = group_by(plotdf, williams_category) |> 
+              summarise(nBelow = sum(signal_to_noise_immune <= SNR_thresh_immune)),
+            aes(label = paste("# below = ", nBelow), y = 125, x = 6)) +
+  facet_wrap(~williams_category) +
+  geom_vline(xintercept = SNR_thresh_immune) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  xlab("Signal to noise ratio, Imd challenge") +
+  ylab("number of genes")
+ggarrange(p_dev, p_immune, nrow = 2, ncol = 1)
+ggsave(filename = "figures/SNR_histograms_embryonic.png", width = 7, height = 5)
+
+# Accompanying stacked barplot of counts per williams category
+plotdf_var_emb <- plotdf |> 
+  mutate(above_dev = signal_to_noise_dev > SNR_thresh_dev,
+         above_immune = signal_to_noise_immune > SNR_thresh_immune) |> 
+  mutate(var_group = if_else(above_dev,
+                             true = if_else(above_immune,
+                                            true = "var_both",
+                                            false = "var_dev"),
+                             false = if_else(above_immune,
+                                             true = "var_immune",
+                                             false = "var_neither")))
+ggplot(plotdf_var_emb, aes(y = factor(williams_category,
+                                      levels = c("Developmental_Non_Pleiotropic",
+                                                 "Pleiotropic",
+                                                 "Immune_Non_Pleiotropic")))) +
+  geom_bar(aes(fill = var_group), position = "fill", stat = "count") +
+  scale_fill_brewer(palette = "Spectral") +
+  theme_classic() +
+  ylab("") +
+  xlab("proportion of genes")
+ggsave(filename = "figures/SNR_stackedBar_embryonic.png", width = 7, height = 1.5)
+
+# embryonic and all-development plots have the most dramatically different proportions
+# for the pleiotropic genes:
+plotdf_var$isEmbryonic <- FALSE
+plotdf_var_emb$isEmbryonic <- TRUE
+plotdf_var_full <- bind_rows(plotdf_var, plotdf_var_emb)
+ggplot(plotdf_var_full, aes(y = isEmbryonic)) +
+  geom_bar(aes(fill = var_group), position = "fill", stat = "count") +
+  scale_fill_brewer(palette = "Spectral") +
+  theme_classic() +
+  facet_wrap(~williams_category) +
+  ylab("is Embryonic") +
+  xlab("proportion of genes")
