@@ -268,7 +268,7 @@ ggarrange(plotlist = plotlist, nrow = 2, ncol = 1, legend = "none")
 
 #### Determining immune/dev variable quadrants ####
 ### Non-conservative/all-dev
-plotdf <- genedf |> filter(williams_category != "Other")
+plotdf <- genedf #|> filter(williams_category != "Other")
 
 # picking variability thresholds
 threshdf <- plotdf |> select(gene_name, williams_category, 
@@ -286,6 +286,9 @@ SNR_thresh_dev <- threshdf |>
   filter(environment == "dev" & 
            williams_category == "Developmental_Non_Pleiotropic") |> 
   select(quant50) |> pull()
+# saving thresholds for use in enhancer and phylogeny scripts
+save(SNR_thresh_immune, SNR_thresh_dev, file = "data/VariabilityThresholds.RData")
+
 # QC: should be same number of genes less than and equal to threshold
 sum(genedf$signal_to_noise_immune[genedf$williams_category == "Immune_Non_Pleiotropic"] > SNR_thresh_immune)
 sum(genedf$signal_to_noise_immune[genedf$williams_category == "Immune_Non_Pleiotropic"] < SNR_thresh_immune)
@@ -340,8 +343,8 @@ p_immune <- ggplot(plotdf, aes(x = signal_to_noise_immune)) +
 ggarrange(p_dev, p_immune, nrow = 2, ncol = 1)
 ggsave(filename = "figures/SNR_histograms.png", width = 7, height = 5)
 
-# Accompanying stacked barplot of counts per williams category
-plotdf_var <- plotdf |> 
+# Accompanying stacked barplot of counts per williams category (including background gene set)
+plotdf_var <- genedf |> 
   mutate(above_dev = signal_to_noise_dev > SNR_thresh_dev,
          above_immune = signal_to_noise_immune > SNR_thresh_immune) |> 
   mutate(var_group = if_else(above_dev,
@@ -351,16 +354,48 @@ plotdf_var <- plotdf |>
                              false = if_else(above_immune,
                                              true = "var_immune",
                                              false = "var_neither")))
+plotdf_var_nGenes <- plotdf_var |> 
+  group_by(williams_category) |> 
+  summarise(n = n())
+nGenes_immune <- plotdf_var_nGenes$n[plotdf_var_nGenes$williams_category == "Immune_Non_Pleiotropic"] |> as.numeric()
+nGenes_plei <- plotdf_var_nGenes$n[plotdf_var_nGenes$williams_category == "Pleiotropic"] |> as.numeric()
+nGenes_dev <- plotdf_var_nGenes$n[plotdf_var_nGenes$williams_category == "Developmental_Non_Pleiotropic"] |> as.numeric()
+nGenes_Other <- plotdf_var_nGenes$n[plotdf_var_nGenes$williams_category == "Other"] |> as.numeric()
 ggplot(plotdf_var, aes(y = factor(williams_category,
-                                  levels = c("Developmental_Non_Pleiotropic",
+                                  levels = c("Other",
+                                             "Immune_Non_Pleiotropic",
                                              "Pleiotropic",
-                                             "Immune_Non_Pleiotropic")))) +
+                                             "Developmental_Non_Pleiotropic"),
+                                  labels = c(paste0("All Other Genes, n = ", nGenes_Other),
+                                             paste0("Immune, Non-Pleiotropic, n = ", nGenes_immune),
+                                             paste0("Pleiotropic, n = ", nGenes_plei),
+                                             paste0("Developmental, Non-Pleiotropic, n = ", nGenes_dev))))) +
   geom_bar(aes(fill = var_group), position = "fill", stat = "count") +
   scale_fill_brewer(palette = "Spectral") +
   theme_classic() +
   ylab("") +
-  xlab("proportion of genes")
-ggsave(filename = "figures/SNR_stackedBar.png", width = 7, height = 1.5)
+  xlab("proportion of genes") +
+  theme(legend.position = "top")
+ggsave(filename = "figures/SNR_stackedBar.png", width = 7, height = 2)
+# chi-sq tests for plei counts vs each other group's proportions:
+chisqdf <- plotdf_var |> 
+  group_by(williams_category, var_group) |> 
+  summarise(n = n()) |> 
+  ungroup()
+# plei vs Dev
+plei_vec <- chisqdf |> filter(williams_category == "Pleiotropic") |> 
+  arrange(desc(var_group)) |> select(n) |> pull()
+dev_vec <- chisqdf |> filter(williams_category == "Developmental_Non_Pleiotropic") |> 
+  arrange(desc(var_group)) |> select(n) |> pull()
+chisq.test(x = plei_vec, p = dev_vec/sum(dev_vec))
+# plei vs Immune
+immune_vec <- chisqdf |> filter(williams_category == "Immune_Non_Pleiotropic") |> 
+  arrange(desc(var_group)) |> select(n) |> pull()
+chisq.test(x = plei_vec, p = immune_vec/sum(immune_vec))
+# plei vs Other
+other_vec <- chisqdf |> filter(williams_category == "Other") |> 
+  arrange(desc(var_group)) |> select(n) |> pull()
+chisq.test(x = plei_vec, p = other_vec/sum(other_vec))
 
 ### Conservative/embryonic (not sure if we need this b/c all the points are still included in the non-conservative version)
 plotdf <- genedf |> 

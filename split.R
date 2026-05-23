@@ -3,29 +3,24 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl",
 
 # loading counts and functions
 source("utils.r")
+source("global.r")
 load("data/CountsList.RData")
-
-# williams dataset of gene functions
-williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
-                      sheet = 2, na = "NA") |> 
-  select(FlyBaseID, Plei_allImmune_allDev) 
-
-# immune gene names (would be nice to just make this a comprehensive gene name lookup table)
-drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
-                                comment = "##")
-colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
-getSymbol <- function(.flybase) {
-  drosophila_lookup$Gene_Symbol[drosophila_lookup$FlyBaseID == .flybase]
-}
-getSymbol("FBgn0014018")
-getFlyBaseID <- function(.symbol) {
-  drosophila_lookup$FlyBaseID[drosophila_lookup$Gene_Symbol == .symbol]
-}
-getFlyBaseID("PGRP-SB1")
 
 # loading snr values and coefficients
 load("data/SignalToNoise.RData")
-SNR_thresh # decided in signal_to_noise.R
+rm(SNR_thresh)
+load("data/VariabilityThresholds.RData")
+# adding variability categories to genedf
+genedf$variability <- map2(genedf$signal_to_noise_dev, genedf$signal_to_noise_immune,
+                           \(snr_d, snr_i) {
+                             if_else(snr_d <= SNR_thresh_dev,
+                                     true = if_else(snr_i <= SNR_thresh_immune,
+                                                    true = "var_neither",
+                                                    false = "var_immune"),
+                                     false = if_else(snr_i <= SNR_thresh_immune,
+                                                     true = "var_dev",
+                                                     false = "var_both"))
+                           }) |> unlist() 
 
 # loading enhancers
 load("data/Enhancers.RData")
@@ -50,158 +45,269 @@ load("data/HOG.RData")
 #### expression/enhancer/evolution heatmap ####
 # Instead of deciding which of these properties is the most discriminating, maybe it'll be obvious in
 # a heatmap form..
-# Really wasn't expecting to see that big an effect
-plotdf <- genedf |> filter(williams_category %in% c("Developmental_Non_Pleiotropic",
-                                                    "Immune_Non_Pleiotropic",
-                                                    "Pleiotropic")) |> 
-  select(gene_name, signal_to_noise_immune, signal_to_noise_dev, williams_category) |> 
-  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "HKSM_only")) |> 
+plotdf <- genedf |> 
+  # # Un-comment below lines to look at conservative/embryonic set:
+  # left_join(select(williams, FlyBaseID, Plei_allImmune_embDev), 
+  #           by = c("gene_name"="FlyBaseID")) |> 
+  # select(-williams_category) |> 
+  # dplyr::rename("williams_category"="Plei_allImmune_embDev") |> 
+  # filter(williams_category %in% c("Developmental_Non_Pleiotropic",
+  #                                                   "Immune_Non_Pleiotropic",
+  #                                                   "Pleiotropic")) |> 
+  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "s2_constit", "HKSM_only")) |> 
               pivot_wider(id_cols = "FlyBaseID", 
                           names_from = "condition", 
                           values_from = "nEnhancers",
                           names_prefix = "nEnhancers_"),
             by = c("gene_name"="FlyBaseID")) |> 
   mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0),
-         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0)) |> 
+         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0),
+         nEnhancers_s2_constit = coalesce(nEnhancers_s2_constit, 0)) |> 
   left_join(y = HOGdf |> select(Dmel_FBgnID, OG_cons, nOG, nOG_dmel),
             by = c("gene_name"="Dmel_FBgnID")) |> 
-  mutate(gene_family_pct_dmel = nOG_dmel/nOG) |> 
-  mutate(williams_code = dense_rank(williams_category)) # 1 = dev, 2 = immune, 3 = plei
-plot_mat <- plotdf |> select(williams_code,
-                             signal_to_noise_immune, signal_to_noise_dev,
-                             nEnhancers_dev, nEnhancers_HKSM_only, 
-                             gene_family_pct_dmel) |> 
+  mutate(gene_family_expanded = nOG_dmel < nOG,
+         hasEnhancers = nEnhancers_dev > 0 | nEnhancers_HKSM_only > 0 | nEnhancers_s2_constit,
+         hasEnhancers_dev = nEnhancers_dev > 0,
+         hasEnhancers_HKSM_only = nEnhancers_HKSM_only > 0,
+         hasEnhancers_s2_constit = nEnhancers_s2_constit > 0,
+         williams_code = dense_rank(williams_category), # 1 = dev, 2 = immune, 3 = plei
+         variability_code = dense_rank(variability)) |> # 1 = var_both, 2 = var_dev, 3 = var_immune, 4 = var_neither
+  filter(!is.na(gene_family_expanded)) |> 
+  arrange(hasEnhancers, gene_family_expanded, williams_code)
+
+# heatmap matrix
+plot_mat <- plotdf |> select(variability_code,
+                             gene_family_expanded,
+                             hasEnhancers) |> 
   as.matrix()
 rownames(plot_mat) <- plotdf$gene_name
 
 # pheatmap, default doesn't scale, I have it scaling by column
-pheatmap(plot_mat, cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
+pheatmap(plot_mat*1, cluster_cols = FALSE, cluster_rows = TRUE, 
+         show_rownames = FALSE, scale = "none", 
+         #color = c("grey80", "#D7191C"))
+         color = c("grey80", "#D7191C", "#FDAE61", "#ABDDA4", "#2B83BA"))
 
-# base R heatmap, default scales by row
-heatmap(plot_mat, Colv = NA, labRow = NA)
+# pretty wild un-enrichment of enhancers among gene family expansions
+# Is that significant unenrichment?
+plotdf |> group_by(hasEnhancers, 
+                   gene_family_expanded) |> 
+  summarise(n = n()) # input that to fisher test, couldn't be less significant
 
-# TODO: Scaling by row makes little sense. But it is showing a pattern
-# That I want to make sure I understand. When SNR_immune > SNR_dev, both
-# values are likely below 1 (which is why gene_family_pct_dmel looks high
-# for these genes). So I think that's not very interesting, provided these
-# cases do tend to have gene_family_pct_dmel == 1. If they have <1, it might
-# be a pattern worth looking into further. I could force the pct to be 0 or 1million
-# or something to guarantee it's the highest value. But that would probably
-# wash out every row's color
+#### do gene family expansions have higher SNR? ####
 
-#### Specific gene set heatmaps ####
-# Pleiotropic genes
-plotdf_plei <- genedf |> filter(williams_category == "Pleiotropic") |> 
-  select(gene_name, signal_to_noise_immune, signal_to_noise_dev) |> 
-  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "HKSM_only")) |> 
+### SNR, dev
+# anova, yes gene family expansion
+datadf <- filter(plotdf, gene_family_expanded & signal_to_noise_dev > 0) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(signal_to_noise_dev ~ isPlei, #+ isDev + isImmune + isOther, 
+                  data = datadf,
+                  family = Gamma(link = "log"))
+anova(mod)
+# anova, no gene family expansion
+datadf <- filter(plotdf, !gene_family_expanded & signal_to_noise_dev > 0) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(signal_to_noise_dev ~ isPlei, #+ isDev + isImmune + isOther, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod)
+# boxplot
+p_devSNR <- ggplot(filter(plotdf, signal_to_noise_dev > 0), 
+                   aes(x = gene_family_expanded, 
+                       y = log2(signal_to_noise_dev))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Signal to noise ratio\nembryonic development (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_devSNR
+
+### SNR, immune
+# anova, yes gene family expansion
+datadf <- filter(plotdf, gene_family_expanded & signal_to_noise_immune > 0) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(signal_to_noise_immune ~ isPlei, #+ isDev + isImmune + isOther, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod) # should be significant
+# anova, no gene family expansion
+datadf <- filter(plotdf, !gene_family_expanded & signal_to_noise_immune > 0) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(signal_to_noise_immune ~ isPlei, #+ isDev + isImmune + isOther, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod) # shouldn't be significant
+# boxplot
+p_immuneSNR <- ggplot(filter(plotdf, signal_to_noise_immune > 0), 
+                   aes(x = gene_family_expanded, 
+                       y = log2(signal_to_noise_immune))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Signal to noise ratio\nImd challenge (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_immuneSNR
+
+ggarrange(p_devSNR, p_immuneSNR)
+ggsave(filename = "figures/geneFamilyExpansions.png", 
+       width = 7, height = 3)
+
+### Repeat with embryonic/conservative set
+plotdf <- genedf |> 
+  # Un-comment below lines to look at conservative/embryonic set:
+  left_join(select(williams, FlyBaseID, Plei_allImmune_embDev),
+            by = c("gene_name"="FlyBaseID")) |>
+  select(-williams_category) |>
+  dplyr::rename("williams_category"="Plei_allImmune_embDev") |>
+  filter(williams_category %in% c("Developmental_Non_Pleiotropic",
+                                                    "Immune_Non_Pleiotropic",
+                                                    "Pleiotropic")) |>
+  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "s2_constit", "HKSM_only")) |> 
               pivot_wider(id_cols = "FlyBaseID", 
                           names_from = "condition", 
                           values_from = "nEnhancers",
                           names_prefix = "nEnhancers_"),
             by = c("gene_name"="FlyBaseID")) |> 
   mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0),
-         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0)) |> 
+         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0),
+         nEnhancers_s2_constit = coalesce(nEnhancers_s2_constit, 0)) |> 
   left_join(y = HOGdf |> select(Dmel_FBgnID, OG_cons, nOG, nOG_dmel),
             by = c("gene_name"="Dmel_FBgnID")) |> 
-  mutate(has_gene_family_gain = nOG > nOG_dmel,
-         has_gene_family_loss = if_else(is.na(OG_cons),
-                                        true = NA,
-                                        false = if_else(OG_cons == "dmel",
-                                                        true = 1,
-                                                        false = 0)))
-plot_mat_plei <- plotdf_plei |> select(signal_to_noise_immune, signal_to_noise_dev,
-                                       nEnhancers_dev, nEnhancers_HKSM_only, 
-                                       has_gene_family_gain, has_gene_family_loss) |> 
-  arrange(desc(signal_to_noise_immune)) |> 
-  as.matrix()
-rownames(plot_mat_plei) <- plotdf_plei$gene_name
-pheatmap(plot_mat_plei[,c(1, 2, 5)], cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
-png("figures/heatmap_plei.png", width = 700, height = 900)
-print(pheatmap(plot_mat_plei, cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101)))
-dev.off()
+  mutate(gene_family_expanded = nOG_dmel < nOG,
+         hasEnhancers = nEnhancers_dev > 0 | nEnhancers_HKSM_only > 0 | nEnhancers_s2_constit,
+         hasEnhancers_dev = nEnhancers_dev > 0,
+         hasEnhancers_HKSM_only = nEnhancers_HKSM_only > 0,
+         hasEnhancers_s2_constit = nEnhancers_s2_constit > 0,
+         williams_code = dense_rank(williams_category), # 1 = dev, 2 = immune, 3 = plei
+         variability_code = dense_rank(variability)) |> # 1 = var_both, 2 = var_dev, 3 = var_immune, 4 = var_neither
+  filter(!is.na(gene_family_expanded))
 
-# what are those plei genes with gene family expansions and high dev SNR?
-plotdf_plei |> filter(has_gene_family_gain) |> 
-  arrange(desc(signal_to_noise_dev)) |> 
-  left_join(drosophila_lookup, by = c("gene_name"="FlyBaseID")) |> 
-  View()
+### SNR, dev
+# just boxplots for now
+p_devSNR <- ggplot(filter(plotdf, signal_to_noise_dev > 0), 
+                   aes(x = gene_family_expanded, 
+                       y = log2(signal_to_noise_dev))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Signal to noise ratio\nembryonic development (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_devSNR # same direction as full data
 
-# Dev genes
-plotdf_dev <- genedf |> filter(williams_category == "Developmental_Non_Pleiotropic") |> 
-  select(gene_name, signal_to_noise_immune, signal_to_noise_dev) |> 
-  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "HKSM_only")) |> 
-              pivot_wider(id_cols = "FlyBaseID", 
-                          names_from = "condition", 
-                          values_from = "nEnhancers",
-                          names_prefix = "nEnhancers_"),
-            by = c("gene_name"="FlyBaseID")) |> 
-  mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0),
-         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0)) |> 
-  left_join(y = HOGdf |> select(Dmel_FBgnID, OG_cons, nOG, nOG_dmel),
-            by = c("gene_name"="Dmel_FBgnID")) |> 
-  mutate(has_gene_family_gain = nOG > nOG_dmel,
-         has_gene_family_loss = if_else(is.na(OG_cons),
-                                        true = NA,
-                                        false = if_else(OG_cons == "dmel",
-                                                        true = 1,
-                                                        false = 0)))
-plot_mat_dev <- plotdf_dev |> select(signal_to_noise_immune, signal_to_noise_dev,
-                                     nEnhancers_dev, nEnhancers_HKSM_only, 
-                                     has_gene_family_gain, has_gene_family_loss) |> 
-  as.matrix()
-rownames(plot_mat_dev) <- plotdf_dev$gene_name
-pheatmap(plot_mat_dev[,c(1, 2, 5)], cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
-png("figures/heatmap_dev.png", width = 700, height = 900)
-pheatmap(plot_mat_dev, cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
-dev.off()
+# boxplot
+p_immuneSNR <- ggplot(filter(plotdf, signal_to_noise_immune > 0), 
+                      aes(x = gene_family_expanded, 
+                          y = log2(signal_to_noise_immune))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Signal to noise ratio\nImd challenge (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_immuneSNR # somewhat same direction as full data
 
-# Immune genes
-plotdf_immune <- genedf |> filter(williams_category == "Immune_Non_Pleiotropic") |> 
-  select(gene_name, signal_to_noise_immune, signal_to_noise_dev) |> 
-  left_join(y = nEnhancerdf |> filter(condition %in% c("dev", "HKSM_only")) |> 
-              pivot_wider(id_cols = "FlyBaseID", 
-                          names_from = "condition", 
-                          values_from = "nEnhancers",
-                          names_prefix = "nEnhancers_"),
-            by = c("gene_name"="FlyBaseID")) |> 
-  mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0),
-         nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0)) |> 
-  left_join(y = HOGdf |> select(Dmel_FBgnID, OG_cons, nOG, nOG_dmel),
-            by = c("gene_name"="Dmel_FBgnID")) |> 
-  mutate(has_gene_family_gain = nOG > nOG_dmel,
-         has_gene_family_loss = if_else(is.na(OG_cons),
-                                        true = NA,
-                                        false = if_else(OG_cons == "dmel",
-                                                        true = 1,
-                                                        false = 0)))
-plot_mat_immune <- plotdf_immune |> select(signal_to_noise_immune, signal_to_noise_dev,
-                                           nEnhancers_dev, nEnhancers_HKSM_only, 
-                                           has_gene_family_gain, has_gene_family_loss) |> 
-  as.matrix()
-rownames(plot_mat_immune) <- plotdf_immune$gene_name
-pheatmap(plot_mat_immune[,c(1, 2, 5)], cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
-png("figures/heatmap_immune.png", width = 700, height = 900)
-pheatmap(plot_mat_immune, cluster_cols = FALSE, cluster_rows = TRUE, 
-         show_rownames = FALSE, scale = "column", 
-         color = colorRampPalette(c("blue", "white", "red"))(100),
-         breaks = seq(-2, 2, length.out = 101))
-dev.off()
+### Means just for fun:
+### mean, dev
+# anova, yes gene family expansion
+datadf <- filter(plotdf, gene_family_expanded & mean_dev > 2) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(log2(mean_dev) ~ isPlei, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod)
+# anova, no gene family expansion
+datadf <- filter(plotdf, !gene_family_expanded & mean_dev > 2) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(mean_dev ~ isPlei, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod)
+# boxplot
+p_devMean <- ggplot(filter(plotdf, mean_dev > 2), 
+                    aes(x = gene_family_expanded, 
+                        y = log2(mean_dev))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Mean expression level\nembryonic development (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_devMean
 
+### mean, immune
+# anova, yes gene family expansion
+datadf <- filter(plotdf, gene_family_expanded & mean_immune > 2) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(log2(mean_immune) ~ isPlei + isDev + isImmune + isOther, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod)
+# anova, no gene family expansion
+datadf <- filter(plotdf, !gene_family_expanded & mean_immune > 2) |> 
+  mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
+         isImmune = williams_category == "Immune_Non_Pleiotropic",
+         isOther = williams_category == "Other",
+         isPlei = williams_category == "Pleiotropic")
+mod <- glm(mean_immune ~ isPlei + isDev + isImmune + isOther, 
+           data = datadf,
+           family = Gamma(link = "log"))
+anova(mod)
+# boxplot
+p_immuneMean <- ggplot(filter(plotdf, mean_immune > 2), 
+                       aes(x = gene_family_expanded, 
+                           y = log2(mean_immune))) +
+  geom_boxplot(aes(fill = factor(williams_category,
+                                 levels = c("Other", 
+                                            "Developmental_Non_Pleiotropic",
+                                            "Immune_Non_Pleiotropic",
+                                            "Pleiotropic")))) +
+  scale_fill_manual(values = ColorValues) +
+  xlab("Gene family expanded outside of D. mel") +
+  ylab("Mean expression level\nImd challenge (log2)") +
+  theme_classic() +
+  theme(legend.position = "none")
+p_immuneMean

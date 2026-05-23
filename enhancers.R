@@ -3,34 +3,12 @@ sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl",
 
 # loading counts and functions
 source("utils.r")
+source("global.r")
 load("data/CountsList.RData")
-
-# williams dataset of gene functions
-williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
-                      sheet = 2, na = "NA") |> 
-  select(FlyBaseID, Plei_allImmune_allDev) 
-
-# FlyBase gene info
-drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
-                                comment = "##")
-colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
-
-# immune gene names (would be nice to just make this a comprehensive gene name lookup table)
-drosophila_lookup <- read_delim("data/best_gene_summary_fb_2026_01.tsv", delim = "\t",
-                                comment = "##")
-colnames(drosophila_lookup) <- c("FlyBaseID", "Gene_Symbol", "Summary_Source", "Summary")
-getSymbol <- function(.flybase) {
-  drosophila_lookup$Gene_Symbol[drosophila_lookup$FlyBaseID == .flybase]
-}
-getSymbol("FBgn0014018")
-getFlyBaseID <- function(.symbol) {
-  drosophila_lookup$FlyBaseID[drosophila_lookup$Gene_Symbol == .symbol]
-}
-getFlyBaseID("PGRP-SB1")
 
 # loading snr values and coefficients
 load("data/SignalToNoise.RData")
-SNR_thresh # decided in signal_to_noise.R
+rm(SNR_thresh)
 
 # Cohen et al. 2026, Imd enhancers
 # loading enhancer assignments
@@ -108,15 +86,179 @@ nEnhancerdf <- bind_rows(nEnhancerdf_dev, nEnhancerdf_hksm,
                          nEnhancerdf_20E, nEnhancerdf_constit,
                          nEnhancerdf_control)
 
+#### Enhancer-gene assignments using gene midpoints ####
+# As a name-check, we're saving all the names of enhancers from Cohen and Kvon
+# all Cohen enhancers, regardless of ATACseq accessibility or gene assignment
+all_enhancers_cohen <- read_csv("data/EG_TFBS_cat_01_19_activityclass.csv") |> 
+  select(Enhancer) |> pull()
+# all Kvon enhancers
+all_enhancers_kvon <- map(c(1:nrow(enhancerdf_Kvon)), \(i) {
+  min_pos <- min(enhancerdf_Kvon$Start_enhancer[i],
+                 enhancerdf_Kvon$End_enhancer[i])
+  max_pos <- max(enhancerdf_Kvon$Start_enhancer[i],
+                 enhancerdf_Kvon$End_enhancer[i])
+  out_string <- paste0(gsub("chr", "", enhancerdf_Kvon$Chrom_enhancer[i]),
+                       ":", min_pos, "-", max_pos, 
+                       "(+)") # Note: this sets enhancer strand to always be +, same as Cohen et al. enhancer-gene assignments
+  return(out_string)
+}) |> unlist() |> unique()
+
+# function to load bedtools closest output into a tibble
+# .col_select is used to specify which columns in bed file correspond to which
+# feature. There MUST be these 9 features in colnames:
+# c("Enhancer_Chromosome","Enhancer_Start", "Enhancer_End",
+# "Gene_Chromosome", "Gene_Start", "Gene_End",
+# "Gene_Strand", "FlyBaseID", "Distance"
+bed2tibble <- function(.file_name, .file_dir = "data/", 
+                       .col_select, .col_names = c("Enhancer_Chromosome",
+                                                   "Enhancer_Start",
+                                                   "Enhancer_End",
+                                                   "Gene_Chromosome",
+                                                   "Gene_Start",
+                                                   "Gene_End",
+                                                   "Gene_Strand",
+                                                   "FlyBaseID",
+                                                   "Distance")) {
+  stopifnot(length(.col_select) == length(.col_names))
+  stopifnot(all(c("Enhancer_Chromosome",
+                  "Enhancer_Start",
+                  "Enhancer_End",
+                  "Gene_Chromosome",
+                  "Gene_Start",
+                  "Gene_End",
+                  "Gene_Strand",
+                  "FlyBaseID",
+                  "Distance") %in% .col_names))
+  outdf <- read_delim(file = paste0(.file_dir, .file_name),
+                      delim = "\t", col_names = FALSE,
+                      col_select = all_of(.col_select),
+                      show_col_types = FALSE)
+  colnames(outdf) <- .col_names
+  # bedtools closest output occasionally outputs the same enhancer-gene assignment in
+  # multiple rows, possibly b/c of input dmel_genes.bed file having duplicate gene entries
+  duplicated_rows <- duplicated(outdf)
+  cat("removing", sum(duplicated_rows), "duplicated rows")
+  outdf <- outdf[!duplicated_rows,]
+  # naming enhancers like Cohen et al.
+  outdf$Enhancer <- map(c(1:nrow(outdf)), \(i) {
+    min_pos <- min(outdf$Enhancer_Start[i],
+                   outdf$Enhancer_End[i])
+    max_pos <- max(outdf$Enhancer_Start[i],
+                   outdf$Enhancer_End[i])
+    out_string <- paste0(gsub("chr", "", outdf$Enhancer_Chromosome[i]),
+                         ":", min_pos, "-", max_pos, 
+                         "(+)") # Note: this sets enhancer strand to always be +, same as Cohen et al. enhancer-gene assignments
+    return(out_string)
+  }) |> unlist()
+  # checking a few things before outputting
+  stopifnot(all(outdf$Enhancer_Chromosome == outdf$Gene_Chromosome)) # genes can't be on different chromosomes
+  # if there are 2+ entries for an enhancer, all the gene distances must be equal, 
+  # that is true ties (all genes overlapping the feature will have a Distance of 0, 
+  # which counts as a true tie)
+  is_fake_tie <- map2(c(1:nrow(outdf)),
+                      duplicated(outdf$Enhancer), 
+                      \(idx, is_dupe) {
+                        if (is_dupe) {
+                          enhancer_name <- outdf$Enhancer[idx]
+                          distances <- outdf |> filter(Enhancer == enhancer_name) |> 
+                            select(Distance) |> pull()
+                          return(length(unique(distances)) != 1)
+                        }
+                        else {
+                          return(FALSE)
+                        }
+                      }) |> unlist()
+  stopifnot(all(!is_fake_tie))
+  return(select(outdf, Enhancer, Enhancer_Chromosome,
+                Enhancer_Start, Enhancer_End, FlyBaseID,
+                Gene_Start, Gene_End, Gene_Strand))
+}
+
+# closest single gene using bedtools closest, genes are only 1bp long at their midpoint
+enhancerdf_midpointsHKSM <- bed2tibble("HKSM_ONLY_midpoints.bed",
+                                       .col_select = c(1:6, 8, 7, 9))
+enhancerdf_midpoints20E <- bed2tibble("20E_midpoints.bed",
+                                      .col_select = c(1:6, 8, 7, 9))
+enhancerdf_midpoints_s2control <- bed2tibble("s2_control_midpoints.bed",
+                                             .col_select = c(1:6, 8, 7, 9))
+enhancerdf_midpoints_s2constit <- bed2tibble("s2_constit_midpoints.bed",
+                                             .col_select = c(1:6, 8, 7, 9))
+# # Kvon et al. 2014 enhancers
+# # writing to BED file for use in bedtools
+# out_bed_Kvon <- select(enhancerdf_Kvon, Chrom_enhancer, Start_enhancer, End_enhancer)
+# names(out_bed_Kvon) <- NULL
+# write_delim(out_bed_Kvon, col_names = FALSE, file = "data/kvon_strong_dev_enhancers_dm3.bed")
+# # Kvon enhancers are dm3, so using USCS liftOver tool to get dm6 coordinates
+enhancerdf_midpoints_dev <- bed2tibble("dev_midpoints.bed",
+                                       .col_select = c(1:6, 8, 7, 9))
+
+
+# how many enhancers from midpoint assignment are in Cohen et al.?
+sum(enhancerdf_midpointsHKSM$Enhancer %in% all_enhancers_cohen) # should be nrow(enhancerdf_midpointsHKSM)
+sum(!(enhancerdf_midpointsHKSM$Enhancer %in% all_enhancers_cohen)) # should be 0
+sum(!(enhancerdf_midpoints20E$Enhancer %in% all_enhancers_cohen)) # should be 0
+sum(!(enhancerdf_midpoints_s2control$Enhancer %in% all_enhancers_cohen)) # should be 0
+sum(!(enhancerdf_midpoints_s2constit$Enhancer %in% all_enhancers_cohen)) # should be 0
+
+# 171 of our midpoint-ID'd enhancers are found in Kvon 2014, and 510 are not, are these dm3 -> dm6 issues?
+# Alternatively they could be the enhancers that were not close to any
+# expressed genes, that we're now assigning to the closest gene regardless of expression
+sum((enhancerdf_midpoints_dev$Enhancer %in% all_enhancers_kvon))
+sum(!(enhancerdf_midpoints_dev$Enhancer %in% all_enhancers_kvon)) # should be 0, but it is currently 510
+# TODO: if all the ones in all_enhancers_kvon are on the same chromosome,
+# It points to a dm3/dm6 issue, If they are scattered it might be b/c of expression
+setdiff(all_enhancers_kvon, enhancerdf_midpoints_dev$Enhancer)[1:10]
+
+# counting nEnhancers per gene
+# HKSM-only
+nEnhancerdf_midpointsHKSM <- enhancerdf_midpointsHKSM |> 
+  group_by(FlyBaseID) |> 
+  summarise(nEnhancers = n()) |>
+  mutate(condition = "midpoints_HKSM_only")
+table(nEnhancerdf_midpointsHKSM$nEnhancers)
+# 20E
+nEnhancerdf_midpoints20E <- enhancerdf_midpoints20E |> 
+  group_by(FlyBaseID) |> 
+  summarise(nEnhancers = n()) |>
+  mutate(condition = "midpoints_20E")
+table(nEnhancerdf_midpoints20E$nEnhancers)
+# Control
+nEnhancerdf_midpoints_s2_control <- enhancerdf_midpoints_s2control |> 
+  group_by(FlyBaseID) |> 
+  summarise(nEnhancers = n()) |>
+  mutate(condition = "midpoints_s2_control")
+table(nEnhancerdf_midpoints_s2_control$nEnhancers)
+# Constit
+nEnhancerdf_midpoints_s2_constit <- enhancerdf_midpoints_s2constit |> 
+  group_by(FlyBaseID) |> 
+  summarise(nEnhancers = n()) |>
+  mutate(condition = "midpoints_s2_constit")
+table(nEnhancerdf_midpoints_s2_constit$nEnhancers)
+# Dev
+nEnhancerdf_midpoints_dev <- enhancerdf_midpoints_dev |> 
+  group_by(FlyBaseID) |> 
+  summarise(nEnhancers = n()) |>
+  mutate(condition = "midpoints_dev")
+table(nEnhancerdf_midpoints_dev$nEnhancers)
+
+# QC_nEnhancerdf for all conditions, comparing published assignments to midpoints
+QC_nEnhancerdf <- bind_rows(nEnhancerdf_midpointsHKSM,
+                            nEnhancerdf_midpoints20E,
+                            nEnhancerdf_midpoints_s2_control,
+                            nEnhancerdf_midpoints_s2_constit,
+                            nEnhancerdf_midpoints_dev)
+QC_nEnhancerdf$nEnhancers |> table() # vast majority only have 1 gene assigned
+nEnhancerdf$nEnhancers |> table() # actually a fairly similar distribution in the published assignments
+
+
 #### Saving enhancer datasets ####
-save(nEnhancerdf, enhancerdf_Cohen, enhancerdf_Kvon,
+save(nEnhancerdf, enhancerdf_Cohen, enhancerdf_Kvon, QC_nEnhancerdf,
      file = "data/Enhancers.RData")
 
-#### Visualizing enhancer stats ####
-# TODO: this plot can probably be cleaned up with the combined nEnhancerdf
-# number of enhancers in each dataset
+#### nUnique enhancers, nEnhancers per gene ####
+# number of UNIQUE enhancers in each dataset
 p_en <- ggplot(tibble(condition = c("develompent", "constit",
-                                    "HKSM", "20E and HKSM"),
+                                    "HKSM"),
                       nEnhancers = c(length(unique(enhancerdf_Kvon$VTID)),
                                      length(unique(pull(select(filter(enhancerdf_Cohen,
                                                                       Group %in% c("Constit") &
@@ -125,44 +267,105 @@ p_en <- ggplot(tibble(condition = c("develompent", "constit",
                                      length(unique(pull(select(filter(enhancerdf_Cohen,
                                                                       Group %in% c("HKSM_only") &
                                                                         Accessibility != "Always closed"),
-                                                               Enhancer)))),
-                                     length(unique(pull(select(filter(enhancerdf_Cohen,
-                                                                      Group %in% c("HKSM_only", "HKSMn20E") &
-                                                                        Accessibility != "Always closed"),
                                                                Enhancer)))))),
-               aes(x = factor(condition, levels = c("develompent", "constit", "HKSM", "20E and HKSM"),
-                              labels = c("Develompent", "Constitutive (S2*)", "HKSM", "20E and HKSM")), 
+               aes(x = factor(condition, levels = c("develompent", "constit", "HKSM"),
+                              labels = c("Embryonic\ndevelompent", "Constitutive\nS2* fat body", "Imd pathway-\nactivated")), 
                    y = nEnhancers)) +
   geom_bar(stat = "identity", color = "black", fill = "grey80") +
-  geom_text(aes(label = nEnhancers, y = nEnhancers + 100)) +
-  ylim(c(0, 1600)) +
+  geom_text(aes(label = nEnhancers, y = nEnhancers + 50)) +
+  #ylim(c(0, 1600)) +
   xlab("") +
   ylab("# unique enhancers") +
   theme_classic()
 p_en
+# nUnique enhancers in each dataset
+ggsave("figures/nUnique_enhancers.png", width = 3, height = 3)
 
-# number of genes targeted by enhancers in each dataset
-p_g <- ggplot(tibble(condition = c("develompent", "constit", "HKSM", "20E and HKSM"),
-              nEnhancers = c(nrow(nEnhancerdf_dev),
-                             nrow(nEnhancerdf_constit),
-                             nrow(nEnhancerdf_hksm),
-                             nrow(nEnhancerdf_20E_hksm))),
-       aes(x = factor(condition, levels = c("develompent", "constit", "HKSM", "20E and HKSM"),
-                      labels = c("Develompent", "Constitutive (S2*)", "HKSM", "20E and HKSM")), 
-           y = nEnhancers)) +
-  geom_bar(stat = "identity", color = "black", fill = "grey80") +
-  geom_text(aes(label = nEnhancers, y = nEnhancers + 100)) +
-  ylim(c(0, 2000)) +
-  xlab("") +
-  ylab("# genes targeted by enhancers") +
-  theme_classic()
-p_g
-p <- ggarrange(p_en, p_g, nrow = 1, ncol = 2)
-ggsave(plot = p, filename = "figures/nEnhancers.png",
-       width = 6, height = 3)
+# average number of genes targeted by enhancers in each dataset
+enhancer_conditions <- c("dev", "s2_constit", "HKSM_only")
+enhancer_labels <- c("Embryonic development", "Constitutive S2* fat body", "Imd pathway-activated")
+plotdf <- bind_rows(x = mutate(nEnhancerdf, assignment = "published"),
+          y = mutate(QC_nEnhancerdf, assignment = "midpoint",
+                 condition = gsub("midpoints_", "", condition))) |> 
+            filter(condition %in% enhancer_conditions) |> 
+  group_by(condition, assignment) |> 
+  summarise(avg_en_per_gene = mean(nEnhancers))
 
+# enhancers per gene histograms
+# published
+plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions)
+p_pub <- ggplot(plotdf,
+       aes(x = nEnhancers)) +
+  geom_bar(stat = "count", color = "black", fill = "grey80") +
+  facet_wrap(~factor(condition, 
+                     levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  scale_x_continuous(labels = seq(from = 1, to = max(plotdf$nEnhancers), by = 2),
+                     breaks = seq(from = 1, to = max(plotdf$nEnhancers), by = 2)) +  
+  xlab("enhancers per gene") +
+  ylab("number of genes") +
+  theme_classic() +
+  ggtitle("Published enhancer assignments")
+# midpoints
+plotdf <- QC_nEnhancerdf |> 
+  mutate(condition = gsub("midpoints_", "", condition)) |> 
+  filter(condition %in% enhancer_conditions)
+p_mid <- ggplot(plotdf,
+       aes(x = nEnhancers)) +
+  geom_bar(stat = "count", color = "black", fill = "grey80") +
+  facet_wrap(~factor(condition, 
+                     levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  scale_x_continuous(labels = c(1:max(plotdf$nEnhancers)),
+                     breaks = c(1:max(plotdf$nEnhancers))) +
+  xlab("enhancers per gene") +
+  ylab("number of genes") +
+  theme_classic() +
+  ggtitle("Closest gene midpoint enhancer assignments")
 
-#### Positive control 1: Do developmental genes have more enhancers? ####
+ggarrange(p_pub, p_mid, nrow = 2, ncol = 1)
+ggsave(filename = "figures/nEnhancers.png",
+       width = 6, height = 4)
+
+# genes per enhancer histograms
+# published
+# TODO: I lost steam on this, but this is mostly copy-pasted code from
+# the enhancers per gene part. Gotta get the enhancer names in each condition from enhancerdf_Cohen/Kvon
+plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions)
+p_pub <- ggplot(plotdf,
+                aes(x = nEnhancers)) +
+  geom_bar(stat = "count", color = "black", fill = "grey80") +
+  facet_wrap(~factor(condition, 
+                     levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  scale_x_continuous(labels = seq(from = 1, to = max(plotdf$nEnhancers), by = 2),
+                     breaks = seq(from = 1, to = max(plotdf$nEnhancers), by = 2)) +  
+  xlab("genes per enhancer") +
+  ylab("number of enhancers") +
+  theme_classic() +
+  ggtitle("Published enhancer assignments")
+# midpoints
+plotdf <- QC_nEnhancerdf |> 
+  mutate(condition = gsub("midpoints_", "", condition)) |> 
+  filter(condition %in% enhancer_conditions)
+p_mid <- ggplot(plotdf,
+                aes(x = nEnhancers)) +
+  geom_bar(stat = "count", color = "black", fill = "grey80") +
+  facet_wrap(~factor(condition, 
+                     levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  scale_x_continuous(labels = c(1:max(plotdf$nEnhancers)),
+                     breaks = c(1:max(plotdf$nEnhancers))) +
+  xlab("genes per enhancer") +
+  ylab("number of enhancers") +
+  theme_classic() +
+  ggtitle("Closest gene midpoint enhancer assignments")
+
+ggarrange(p_pub, p_mid, nrow = 2, ncol = 1)
+ggsave(filename = "figures/nGenesPerEnhancer.png",
+       width = 6, height = 4)
+
+#### Jitter plots of number of enhancers per gene ####
 
 # all developmental enhancers
 plotdf <- left_join(genedf, nEnhancerdf_dev,
@@ -177,11 +380,11 @@ plotdf_pcts <- plotdf |>
 
 # gene type defined in Williams et al.
 p <- ggplot(plotdf,
-       aes(x = factor(williams_category,
-                      levels = c("Developmental_Non_Pleiotropic",
-                                 "Pleiotropic",
-                                 "Immune_Non_Pleiotropic")), 
-           y = nEnhancers)) +
+            aes(x = factor(williams_category,
+                           levels = c("Developmental_Non_Pleiotropic",
+                                      "Pleiotropic",
+                                      "Immune_Non_Pleiotropic")), 
+                y = nEnhancers)) +
   geom_jitter(aes(color = williams_category), height = 0) +
   geom_text(data = plotdf_pcts,
             aes(x = williams_category, y = 15, 
@@ -199,11 +402,9 @@ p
 ggsave("figures/nEnhancers_dev_scatter.png", plot = p,
        width = 6, height = 4)
 
-#### Violin plots of number of enhancers per gene ####
-
 # HKSM-only enhancers
 plotdf <- left_join(genedf, nEnhancerdf_hksm,
-                    by = c("gene_name"="Gene")) |>  
+                    by = c("gene_name"="FlyBaseID")) |>  
   filter(williams_category != "Other") |> 
   mutate(nEnhancers = coalesce(nEnhancers, 0)) # genes missing from nEnhancerdf have 0 known enhancers
 
@@ -238,7 +439,7 @@ ggsave("figures/nEnhancers_hksm_scatter.png", plot = p,
 
 # Constitutive S2* enhancers
 plotdf <- left_join(genedf, nEnhancerdf_constit,
-                    by = c("gene_name"="Gene")) |>  
+                    by = c("gene_name"="FlyBaseID")) |>  
   filter(williams_category != "Other") |> 
   mutate(nEnhancers = coalesce(nEnhancers, 0)) # genes missing from nEnhancerdf have 0 known enhancers
 
@@ -270,11 +471,17 @@ p <- ggplot(plotdf,
 p
 
 #### Bar plots of pct genes with 1+ enhancer ####
+# set conditions to include here
+# enhancer_conditions <- c("dev", "s2_constit", "s2_control", "20E", "HKSM_only")
+enhancer_conditions <- c("dev", "s2_constit", "HKSM_only")
+enhancer_labels <- c("Embryonic development", "Constitutive S2* fat body", "Imd pathway-activated")
+
 plotdf_pcts <- genedf |> select(gene_name, williams_category) |> 
   expand_grid(condition = unique(nEnhancerdf$condition)) |> 
   left_join(y = filter(nEnhancerdf, FlyBaseID %in% genedf$gene_name),
             by = c("gene_name"="FlyBaseID", "condition")) |> 
   mutate(nEnhancers = coalesce(nEnhancers, 0)) |> 
+  filter(condition %in% enhancer_conditions) |> 
   group_by(williams_category, condition) |> 
   summarise(n_with_enhancer = sum(nEnhancers > 0),
             n = n(),
@@ -287,35 +494,48 @@ ggplot(plotdf_pcts, aes(x = williams_category, y = pct_with_enhancer/100)) +
                                "Pleiotropic"="#619CFF",
                                "Immune_Non_Pleiotropic"="#00BA38",
                                "Other"="grey80")) +
-  facet_wrap(~factor(condition, levels = c("dev", "s2_constit", "s2_control",
-                                           "20E", "HKSM_only"))) +
-  ylab("fraction of genes with at least one enhancer") +
+  facet_wrap(~factor(condition, levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  ylab("fraction of genes with\nat least one enhancer") +
   xlab("") +
   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
-# Just dev, hksm-only, and constit (most useful comparisons)
-p <- ggplot(filter(plotdf_pcts, condition %in% c("s2_constit", "HKSM_only", "dev")),
-       aes(x = williams_category, y = pct_with_enhancer/100)) +
-  geom_bar(aes(fill = factor(williams_category,
-                             levels = c("Other", "Developmental_Non_Pleiotropic",
-                                        "Immune_Non_Pleiotropic", "Pleiotropic"))), 
-           stat = "identity") +
+ggsave(filename = "figures/enhancer_pcts_bar.png",
+       width = 8, height = 4)
+
+# Gene midpoint control plotting
+enhancer_conditions <- c("midpoints_dev", "midpoints_s2_constit", "midpoints_HKSM_only")
+enhancer_labels <- c("Embryonic development", "Constitutive S2* fat body", "Imd pathway-activated")
+
+plotdf_pcts <- genedf |> select(gene_name, williams_category) |> 
+  expand_grid(condition = unique(QC_nEnhancerdf$condition)) |> 
+  left_join(y = filter(QC_nEnhancerdf, FlyBaseID %in% genedf$gene_name),
+            by = c("gene_name"="FlyBaseID", "condition")) |> 
+  mutate(nEnhancers = coalesce(nEnhancers, 0)) |> 
+  filter(condition %in% enhancer_conditions) |> 
+  group_by(williams_category, condition) |> 
+  summarise(n_with_enhancer = sum(nEnhancers > 0),
+            n = n(),
+            pct_with_enhancer = (n_with_enhancer/n)*100)
+
+ggplot(plotdf_pcts, aes(x = williams_category, y = pct_with_enhancer/100)) +
+  geom_bar(aes(fill = williams_category), stat = "identity") +
   theme_classic() +
   scale_fill_manual(values = c("Developmental_Non_Pleiotropic"="#F8766D",
                                "Pleiotropic"="#619CFF",
                                "Immune_Non_Pleiotropic"="#00BA38",
                                "Other"="grey80")) +
-  facet_wrap(~factor(condition, levels = c("s2_constit", "HKSM_only", "dev"))) +
-  ylab("fraction of genes with at least one enhancer") +
+  facet_wrap(~factor(condition, levels = enhancer_conditions,
+                     labels = enhancer_labels)) +
+  ylab("fraction of genes with\nat least one enhancer") +
   xlab("") +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
-        legend.position = "none")
-p
-ggsave(plot = p,
-       filename = "figures/enhancer_pcts_bar.png",
-       width = 7, height = 5)
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
 
-#### How many pleiotropic genes have developmental and immune enhancers? ####
+ggsave(filename = "figures/enhancer_pcts_bar_midpoints.png",
+       width = 8, height = 4)
+
+
+#### How many pleiotropic genes have both developmental and immune enhancers? ####
 # About 7% of pleiotropic genes have connections to developmental or immune enhancers.
 # But are these different sets of 7?
 plotdf <- genedf |> filter(williams_category != "Other") |> 
@@ -324,27 +544,38 @@ plotdf <- genedf |> filter(williams_category != "Other") |>
   dplyr::rename(c("nEnhancers_dev" = "nEnhancers")) |> 
   mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0)) |> 
   left_join(nEnhancerdf_hksm,
-            by = c("gene_name"="Gene")) |> 
+            by = c("gene_name"="FlyBaseID")) |> 
   dplyr::rename(c("nEnhancers_hksm" = "nEnhancers")) |> 
-  mutate(nEnhancers_hksm = coalesce(nEnhancers_hksm, 0)) 
+  mutate(nEnhancers_hksm = coalesce(nEnhancers_hksm, 0)) |> 
+  left_join(nEnhancerdf_constit,
+            by = c("gene_name"="FlyBaseID")) |> 
+  dplyr::rename(c("nEnhancers_constit" = "nEnhancers")) |> 
+  mutate(nEnhancers_constit = coalesce(nEnhancers_constit, 0)) 
 
 library(ggVennDiagram)
 plotlist <- list(development = plotdf |> 
                    filter(williams_category == "Pleiotropic") |> 
                    filter(nEnhancers_dev > 0) |> 
                    select(gene_name) |> pull(),
-                 immune = plotdf |> 
+                 s2_constit = plotdf |> 
+                   filter(williams_category == "Pleiotropic") |> 
+                   filter(nEnhancers_constit > 0) |> 
+                   select(gene_name) |> pull(),
+                 imd = plotdf |> 
                    filter(williams_category == "Pleiotropic") |> 
                    filter(nEnhancers_hksm > 0) |> 
                    select(gene_name) |> pull())
 p <- ggVennDiagram(plotlist, label_color = "black", 
                    label_alpha = 0) + 
   coord_flip() +
-  scale_fill_gradient(low="grey90",high = "red")
+  scale_fill_gradient(low="grey90",high = "red") +
+  theme(legend.position = "none")
 p # one gene
+ggsave(filename = "figures/Venn_pleiEnhancers.png", width = 4, height = 4)
 plotdf |> filter(williams_category == "Pleiotropic" &
                    nEnhancers_dev > 0 &
-                   nEnhancers_hksm > 0) # FBgn0260635 = Diap1
+                   nEnhancers_hksm > 0 &
+                   nEnhancers_constit) # FBgn0260635 = Diap1
 plotExpressionProfile(.counts = counts$immune, .info = infodf$immune,
                       .gene_idxs = "FBgn0260635", .gene_names = "Diap1")
 plotExpressionProfile(.counts = counts$dev, .info = infodf$dev,
@@ -582,92 +813,18 @@ plotdf |> filter(nEnhancers_hksm > 0 &
                    williams_category == "Pleiotropic") |> 
   arrange(desc(signal_to_noise_immune))
 
-#### Pure proximity enhancer-gene assignments ####
-# all Cohen enhancers, regardless of ATACseq accessibility or gene assignment
-all_enhancers_cohen <- read_csv("data/EG_TFBS_cat_01_19_activityclass.csv") |> 
-  select(Enhancer) |> pull()
+#### Pure proximity enhancer-gene assignments, not midpoints ####
+# # quick function to remove enhancer strand information, as this is the thing
+# # that might be different between closest enhancer assignments and Cohen enhancer assignments
+# destrandEnhancer <- function(.enhancer_name) {
+#   .enhancer_name |> 
+#   gsub(pattern = "\\(\\+\\)", replacement = "") |> 
+#     gsub(pattern = "\\(\\-\\)", replacement = "")
+# }
+# # tests for destrandEnhancer
+# destrandEnhancer("2L:119700-121346(+)")
+# destrandEnhancer("X:119700-121346(-)")
 
-# quick function to remove enhancer strand information, as this is the thing
-# that might be different between closest enhancer assignments and Cohen enhancer assignments
-destrandEnhancer <- function(.enhancer_name) {
-  .enhancer_name |> 
-  gsub(pattern = "\\(\\+\\)", replacement = "") |> 
-    gsub(pattern = "\\(\\-\\)", replacement = "")
-}
-# tests for destrandEnhancer
-destrandEnhancer("2L:119700-121346(+)")
-destrandEnhancer("X:119700-121346(-)")
-
-# function to load bedtools closest output into a tibble
-# .col_select is used to specify which columns in bed file correspond to which
-# feature. There MUST be these 9 features in colnames:
-# c("Enhancer_Chromosome","Enhancer_Start", "Enhancer_End",
-# "Gene_Chromosome", "Gene_Start", "Gene_End",
-# "Gene_Strand", "FlyBaseID", "Distance"
-bed2tibble <- function(.file_name, .file_dir = "data/", 
-                       .col_select, .col_names = c("Enhancer_Chromosome",
-                                                   "Enhancer_Start",
-                                                   "Enhancer_End",
-                                                   "Gene_Chromosome",
-                                                   "Gene_Start",
-                                                   "Gene_End",
-                                                   "Gene_Strand",
-                                                   "FlyBaseID",
-                                                   "Distance")) {
-  stopifnot(length(.col_select) == length(.col_names))
-  stopifnot(all(c("Enhancer_Chromosome",
-                 "Enhancer_Start",
-                 "Enhancer_End",
-                 "Gene_Chromosome",
-                 "Gene_Start",
-                 "Gene_End",
-                 "Gene_Strand",
-                 "FlyBaseID",
-                 "Distance") %in% .col_names))
-  outdf <- read_delim(file = paste0(.file_dir, .file_name),
-                      delim = "\t", col_names = FALSE,
-                      col_select = all_of(.col_select),
-                      show_col_types = FALSE)
-  colnames(outdf) <- .col_names
-  # bedtools closest output occasionally outputs the same enhancer-gene assignment in
-  # multiple rows, possibly b/c of input dmel_genes.bed file having duplicate gene entries
-  duplicated_rows <- duplicated(outdf)
-  cat("removing", sum(duplicated_rows), "duplicated rows")
-  outdf <- outdf[!duplicated_rows,]
-  # naming enhancers like Cohen et al.
-  outdf$Enhancer <- map(c(1:nrow(outdf)), \(i) {
-    min_pos <- min(outdf$Enhancer_Start[i],
-                   outdf$Enhancer_End[i])
-    max_pos <- max(outdf$Enhancer_Start[i],
-                   outdf$Enhancer_End[i])
-    out_string <- paste0(gsub("chr", "", outdf$Enhancer_Chromosome[i]),
-                         ":", min_pos, "-", max_pos, 
-                         "(+)") # Note: this sets enhancer strand to always be +, same as Cohen et al. enhancer-gene assignments
-    return(out_string)
-  }) |> unlist()
-  # checking a few things before outputting
-  stopifnot(all(outdf$Enhancer_Chromosome == outdf$Gene_Chromosome)) # genes can't be on different chromosomes
-  # if there are 2+ entries for an enhancer, all the gene distances must be equal, 
-  # that is true ties (all genes overlapping the feature will have a Distance of 0, 
-  # which counts as a true tie)
-  is_fake_tie <- map2(c(1:nrow(outdf)),
-                      duplicated(outdf$Enhancer), 
-                      \(idx, is_dupe) {
-                        if (is_dupe) {
-                          enhancer_name <- outdf$Enhancer[idx]
-                          distances <- outdf |> filter(Enhancer == enhancer_name) |> 
-                            select(Distance) |> pull()
-                          return(length(unique(distances)) != 1)
-                        }
-                        else {
-                          return(FALSE)
-                        }
-  }) |> unlist()
-  stopifnot(all(!is_fake_tie))
-  return(select(outdf, Enhancer, Enhancer_Chromosome,
-                Enhancer_Start, Enhancer_End, FlyBaseID,
-                Gene_Start, Gene_End, Gene_Strand))
-}
 # loading alternative enhancer-gene assignments to compare
 # to Cohen et al.
 
@@ -891,115 +1048,7 @@ ggsave(plot = p, filename = "figures/gene_length_box.pdf",
 
 # Yup they are longer, so are dev genes
 
-#### Enhancer-gene assignments using gene midpoints ####
-# closest single gene using bedtools closest, genes are only 1bp long at their midpoint
-enhancerdf_midpointsHKSM <- bed2tibble("HKSM_ONLY_midpoints.bed",
-                                       .col_select = c(1:6, 8, 7, 9))
-enhancerdf_midpoints20E <- bed2tibble("20E_midpoints.bed",
-                                      .col_select = c(1:6, 8, 7, 9))
-enhancerdf_midpoints_s2control <- bed2tibble("s2_control_midpoints.bed",
-                                             .col_select = c(1:6, 8, 7, 9))
-enhancerdf_midpoints_s2constit <- bed2tibble("s2_constit_midpoints.bed",
-                                             .col_select = c(1:6, 8, 7, 9))
 
-# # Kvon et al. 2014 enhancers
-# # writing to BED file for use in bedtools
-# out_bed_Kvon <- select(enhancerdf_Kvon, Chrom_enhancer, Start_enhancer, End_enhancer)
-# names(out_bed_Kvon) <- NULL
-# write_delim(out_bed_Kvon, col_names = FALSE, file = "data/kvon_strong_dev_enhancers_dm3.bed")
-# # Kvon enhancers are dm3, so using USCS liftOver tool to get dm6 coordinates
-enhancerdf_midpoints_dev <- bed2tibble("dev_midpoints.bed",
-                                       .col_select = c(1:6, 8, 7, 9))
-all_enhancers_kvon <- map(c(1:nrow(enhancerdf_Kvon)), \(i) {
-  min_pos <- min(enhancerdf_Kvon$Start_enhancer[i],
-                 enhancerdf_Kvon$End_enhancer[i])
-  max_pos <- max(enhancerdf_Kvon$Start_enhancer[i],
-                 enhancerdf_Kvon$End_enhancer[i])
-  out_string <- paste0(gsub("chr", "", enhancerdf_Kvon$Chrom_enhancer[i]),
-                       ":", min_pos, "-", max_pos, 
-                       "(+)") # Note: this sets enhancer strand to always be +, same as Cohen et al. enhancer-gene assignments
-  return(out_string)
-}) |> unlist() |> unique()
-
-# how many enhancers in midpoints are in Cohen et al.?
-sum(enhancerdf_midpointsHKSM$Enhancer %in% all_enhancers_cohen) # should be nrow(enhancerdf_midpointsHKSM)
-sum(!(enhancerdf_midpointsHKSM$Enhancer %in% all_enhancers_cohen)) # should be 0
-sum(!(enhancerdf_midpoints20E$Enhancer %in% all_enhancers_cohen)) # should be 0
-sum(!(enhancerdf_midpoints_s2control$Enhancer %in% all_enhancers_cohen)) # should be 0
-sum(!(enhancerdf_midpoints_s2constit$Enhancer %in% all_enhancers_cohen)) # should be 0
-
-# TODO: 201 in Kvon 2014, and 575 not, are these dm3 -> dm6 issues?
-sum((enhancerdf_midpoints_dev$Enhancer %in% all_enhancers_kvon))
-sum(!(enhancerdf_midpoints_dev$Enhancer %in% all_enhancers_kvon)) # should be 0
-setdiff(all_enhancers_kvon, enhancerdf_midpoints_dev$Enhancer)[1:10]
-
-# counting nEnhancers per gene
-# HKSM-only
-nEnhancerdf_midpointsHKSM <- enhancerdf_midpointsHKSM |> 
-  group_by(FlyBaseID) |> 
-  summarise(nEnhancers = n()) |>
-  mutate(condition = "midpoints_HKSM_only")
-table(nEnhancerdf_midpointsHKSM$nEnhancers)
-# 20E
-nEnhancerdf_midpoints20E <- enhancerdf_midpoints20E |> 
-  group_by(FlyBaseID) |> 
-  summarise(nEnhancers = n()) |>
-  mutate(condition = "midpoints_20E")
-table(nEnhancerdf_midpoints20E$nEnhancers)
-# Control
-nEnhancerdf_midpoints_s2_control <- enhancerdf_midpoints_s2control |> 
-  group_by(FlyBaseID) |> 
-  summarise(nEnhancers = n()) |>
-  mutate(condition = "midpoints_s2_control")
-table(nEnhancerdf_midpoints_s2_control$nEnhancers)
-# Constit
-nEnhancerdf_midpoints_s2_constit <- enhancerdf_midpoints_s2constit |> 
-  group_by(FlyBaseID) |> 
-  summarise(nEnhancers = n()) |>
-  mutate(condition = "midpoints_s2_constit")
-table(nEnhancerdf_midpoints_s2_constit$nEnhancers)
-# Dev
-nEnhancerdf_midpoints_dev <- enhancerdf_midpoints_dev |> 
-  group_by(FlyBaseID) |> 
-  summarise(nEnhancers = n()) |>
-  mutate(condition = "midpoints_dev")
-table(nEnhancerdf_midpoints_dev$nEnhancers)
-
-# QC_nEnhancerdf for all conditions, comparing published assignments to midpoints
-QC_nEnhancerdf <- bind_rows(nEnhancerdf_midpointsHKSM,
-                            nEnhancerdf_midpoints20E,
-                            nEnhancerdf_midpoints_s2_control,
-                            nEnhancerdf_midpoints_s2_constit,
-                            nEnhancerdf_midpoints_dev)
-# plotting
-plotdf_pcts <- genedf |> select(gene_name, williams_category) |> 
-  expand_grid(condition = unique(QC_nEnhancerdf$condition)) |> 
-  left_join(y = filter(QC_nEnhancerdf, FlyBaseID %in% genedf$gene_name),
-            by = c("gene_name"="FlyBaseID", "condition")) |>
-  mutate(nEnhancers = coalesce(nEnhancers, 0)) |> 
-  group_by(williams_category, condition) |> 
-  summarise(n_with_enhancer = sum(nEnhancers > 0),
-            n = n(),
-            pct_with_enhancer = (n_with_enhancer/n)*100)
-
-ggplot(filter(plotdf_pcts, condition %in% c("midpoints_s2_constit",
-                                            "midpoints_HKSM_only",
-                                            "midpoints_dev")), 
-       aes(x = williams_category, y = pct_with_enhancer/100)) +
-  geom_bar(aes(fill = williams_category), stat = "identity") +
-  theme_classic() +
-  facet_wrap(~factor(condition, levels = c("midpoints_s2_constit",
-                                           "midpoints_HKSM_only",
-                                           "midpoints_dev"))) +
-  ylab("fraction of genes with at least one enhancer") +
-  xlab("") +
-  scale_fill_manual(values = c("Developmental_Non_Pleiotropic"="#F8766D",
-                               "Pleiotropic"="#619CFF",
-                               "Immune_Non_Pleiotropic"="#00BA38",
-                               "Other"="grey80")) +
-  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
-        legend.position = "none") +
-  ggtitle("Bedtools midpoints Enhancer-Gene assignments")
 
 ### Are any chromosomes enriched for Plei gene enhancer assignments?
 enhancerdf_closest_s2constit |> left_join(y = select(genedf, gene_name, williams_category),
