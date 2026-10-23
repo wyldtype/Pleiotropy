@@ -1,4 +1,6 @@
-sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl", "readr", "stringr", "plotly", "lmtest", "pheatmap"), FUN = require,
+sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", 
+         "readxl", "readr", "stringr", "plotly", "lmtest", "pheatmap",
+         "splines"), FUN = require,
        character.only = TRUE)
 
 source("utils.r")
@@ -14,11 +16,10 @@ williams <- read_xlsx(path = "data/17Jan2023_Supplemental_File_1.xlsx",
 # To refer to it as clustdf. Either change it to longdf or envdf, something
 # to indicate genes have multiple rows, and probably no longer output it in Signal_to_Noise.RData
 
-
 load("data/ImmuneCounts.RData")
 counts_immune <- counts
-clustdf_immune <- tibble("gene_name" = counts_immune$gene_name,
-                         "environment" = "immune")
+longdf_immune <- tibble("gene_name" = counts_immune$gene_name,
+                        "environment" = "immune")
 infodf_immune <- tibble("sample_name" = colnames(counts_immune)[-1],
                         "replicate" = if_else(grepl("A", colnames(counts_immune)[-1]),
                                                     true = "A", false = "B"),
@@ -27,40 +28,52 @@ rm(counts)
 
 load("data/DevCounts.RData")
 counts_dev <- counts
-clustdf_dev <- tibble("gene_name" = counts_dev$gene_name,
-                      "environment" = "dev")
+longdf_dev <- tibble("gene_name" = counts_dev$gene_name,
+                     "environment" = "dev")
 infodf_dev <- infodf |> select(-sample_name) |> dplyr::rename("sample_name"="colname")
 rm(counts, infodf)
 
-load("data/OogCounts.RData")
-counts_oog <- counts
-clustdf_oog <- tibble("gene_name" = counts_oog$gene_name,
-                      "environment" = "oog")
-infodf_oog <- infodf
-rm(counts, infodf)
-
-#### Limiting Oogenesis to WholeOvary ####
-samples_wholeOvary <- grep("^WholeOvary", colnames(counts_oog), value = TRUE)
-counts_oog <- counts_oog[, c("gene_name", samples_wholeOvary)]
-infodf_oog <- filter(infodf_oog, sample_name %in% samples_wholeOvary)
-
-#### Combining datasets ####
-# combining clustering results
-clustdf <- bind_rows(clustdf_immune, clustdf_dev, clustdf_oog) |> 
-  left_join(y = select(williams, FlyBaseID, 
+# dataframe where genes have multiple rows, one for each environment
+longdf <- bind_rows(longdf_immune, longdf_dev) |>
+  left_join(y = select(williams, FlyBaseID,
                        Plei_allImmune_allDev),
             by = c("gene_name"="FlyBaseID"))
-clustdf$williams_category <- if_else(is.na(clustdf$Plei_allImmune_allDev),
-                                     true = "Other",
-                                     false = clustdf$Plei_allImmune_allDev)
+
+# load("data/OogCounts.RData")
+# counts_oog <- counts
+# clustdf_oog <- tibble("gene_name" = counts_oog$gene_name,
+#                       "environment" = "oog")
+# infodf_oog <- infodf
+# rm(counts, infodf)
+
+# #### Limiting Oogenesis to WholeOvary ####
+# samples_wholeOvary <- grep("^WholeOvary", colnames(counts_oog), value = TRUE)
+# counts_oog <- counts_oog[, c("gene_name", samples_wholeOvary)]
+# infodf_oog <- filter(infodf_oog, sample_name %in% samples_wholeOvary)
+
+#### Combining datasets ####
+# # combining clustering results
+# clustdf <- bind_rows(clustdf_immune, clustdf_dev, clustdf_oog) |> 
+#   left_join(y = select(williams, FlyBaseID, 
+#                        Plei_allImmune_allDev),
+#             by = c("gene_name"="FlyBaseID"))
+# clustdf$williams_category <- if_else(is.na(clustdf$Plei_allImmune_allDev),
+#                                      true = "Other",
+#                                      false = clustdf$Plei_allImmune_allDev)
+
+# # combining counts and infodfs
+# counts <- list("immune" = counts_immune,
+#                "dev" = counts_dev,
+#                "oog" = counts_oog)
+# infodf <- list("immune" = infodf_immune,
+#                "dev" = infodf_dev,
+#                "oog" = infodf_oog)
 
 # combining counts and infodfs
 counts <- list("immune" = counts_immune,
-               "dev" = counts_dev,
-               "oog" = counts_oog)
+               "dev" = counts_dev)
 infodf <- list("immune" = infodf_immune,
-               "dev" = infodf_dev,
-               "oog" = infodf_oog)
+               "dev" = infodf_dev)
 
 #### Saving counts and info lists ####
 save(counts, infodf, file = "data/CountsList.RData")
@@ -78,9 +91,9 @@ getInfo <- function(.sample_vec, .environment, .info_colname) {
 test_col <- colnames(counts_immune)[sample(2:ncol(counts_immune), size = 1)]
 test_col
 getInfo(test_col, .environment = "immune", .info_colname = "hour")
-test_cols <- colnames(counts_oog)[sample(2:ncol(counts_oog), size = 5)]
+test_cols <- colnames(counts_dev)[sample(2:ncol(counts_dev), size = 5)]
 test_cols
-getInfo(test_cols, .environment = "oog", .info_colname = "hour")
+getInfo(test_cols, .environment = "dev", .info_colname = "hour")
 
 #### Functions for Signal to Noise ####
 # We'll define "signal" as the proportion of the expression variance (ESS,
@@ -106,37 +119,94 @@ getData <- function(.gene, .environment) {
   return(list(counts = counts_vec, hour = hour_vec))
 }
 
-### Fit our polynomial linear model
-fitModel <- function(.counts_vec, .hour_vec, .degree = 3) {
+### QC function for finding a good value of degree
+compareSmoothingDegrees <- function(.degree_vec = c(3:10), 
+                                    .smoothing_function,
+                                    .dataframe,
+                                    .fitted_col_name = "fitted.values") {
+  plotlist <- map(.degree_vec, \(.df) {
+    test_mod <- .smoothing_function(.counts_vec = .dataframe$counts, 
+                                    .hour_vec = .dataframe$hour,
+                                    .degree = .df)
+    plotdf <- .dataframe |> as_tibble()
+    plotdf$fitted <- as.numeric(unlist(test_mod[.fitted_col_name]))
+    p <- ggplot() +
+      geom_point(data = plotdf, aes(x = hour, y = counts), alpha = 0.5) +
+      geom_line(data = plotdf, aes(x = hour, y = fitted), color = "red") +
+      theme_classic() +
+      ggtitle(paste0("smoothing = ", .df))
+  })
+  return(plotlist)
+}
+### Fit our global polynomial linear model
+fitGlobalPolynomialModel <- function(.counts_vec, .hour_vec, .degree = 8) {
   x <- data.frame(count = .counts_vec,
                   hour = .hour_vec)
   mod <- lm(count ~ poly(hour, degree = .degree), data = x)
   return(mod)
 }
-# tests for fitModel and getData
+# tests for fitGlobalPolynomialModel and getData
 test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
-test_mod <- fitModel(.counts_vec = test_data$counts, 
+test_mod <- fitGlobalPolynomialModel(.counts_vec = test_data$counts, 
                      .hour_vec = test_data$hour)
 test_anova <- anova(test_mod)
 test_anova[1,"Sum Sq"]/test_anova["Residuals", "Sum Sq"]
+# comparing smoothing degrees
+plotlist <- compareSmoothingDegrees(.data = test_data, 
+                        .smoothing_function = fitGlobalPolynomialModel,
+                        .degree_vec = c(3:10))
+ggarrange(plotlist = plotlist, nrow = 3, ncol = 3) # 6-8 degrees looks best
 
-### fits a null model where time is not a predictor, for likelihood ratio test
-fitNullModel <- function(.counts_vec, .hour_vec) {
+### Fit our spline polynomial model
+fitSplineModel <- function(.counts_vec, .hour_vec, .degree = 4) {
   x <- data.frame(count = .counts_vec,
                   hour = .hour_vec)
-  mod <- lm(count ~ 1, data = x)
+  mod <- lm(count ~ ns(hour, df = .degree), data = x)
   return(mod)
 }
-# tests for fitNullModel
-test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
-test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
-                              .hour_vec = test_data$hour)
-test_full_lik <- logLik(test_mod)
-test_null_lik <- logLik(test_null_mod)
-test_lrt_stat <- -2 * (as.numeric(test_null_lik)-as.numeric(test_full_lik)) # why scale by -2? No idea but it makes it a chisq distributed stat: https://api.rpubs.com/tomanderson_34/lrt
-pchisq(test_lrt_stat, df = 1, lower.tail = FALSE)
+# tests for fitSplineModel
+#test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+random_immune_gene <- sample(counts_immune$gene_name, size = 1)
+test_data <- getData(.gene = random_immune_gene,
+                     .environment = "immune")
+test_mod <- fitSplineModel(.counts_vec = test_data$counts, 
+                           .hour_vec = test_data$hour,
+                           .degree = 4)
+# comparing smoothing degrees
+plotlist <- compareSmoothingDegrees(.data = test_data, 
+                                    .smoothing_function = fitSplineModel,
+                                    .degree_vec = c(2:10))
+ggarrange(plotlist = plotlist, nrow = 3, ncol = 3)
+# degree=4 for ns splines range looks equivalent to degree=8 for global poly, for Bomanin short 1
+# Conclusion: bs vs ns don't look that different. 4 degrees seems to be a good value for both
+test_anova <- anova(test_mod)
+test_anova[1,"Sum Sq"]/test_anova["Residuals", "Sum Sq"]
 
-### get the anova info
+### Fit our loess linear model
+fitLoessModel <- function(.counts_vec, .hour_vec, .degree = 0.5) {
+  x <- data.frame(count = .counts_vec,
+                  hour = .hour_vec)
+  mod <- loess(count ~ hour, span = .degree, data = x)
+  return(mod)
+}
+# tests for fitLoessModel and getData
+test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+test_mod_loess <- fitLoessModel(.counts_vec = test_data$counts, 
+                                .hour_vec = test_data$hour)
+# slightly different output from loess
+test_ModSS <- sum((test_mod_loess$fitted - mean(test_mod_loess$y))^2)
+test_RSS <- sum(test_mod_loess$residuals^2)
+test_ModSS/test_RSS
+# comparing smoothing degrees
+plotlist <- compareSmoothingDegrees(.data = test_data, 
+                                    .smoothing_function = fitLoessModel,
+                                    .degree_vec = seq(from = 0.2, to = 1, by = 0.1),
+                                    .fitted_col_name = "fitted") # dumb
+ggarrange(plotlist = plotlist, nrow = 3, ncol = 3) # 0.5 looks good
+
+# Conclusion: modifying the smoothing parameter seems more important than the technique used
+
+### get the anova info, not for LOESS
 getSNR <- function(.mod) {
   mod_anova <- anova(.mod)
   snr <- mod_anova[1,"Sum Sq"]/mod_anova["Residuals", "Sum Sq"]
@@ -147,98 +217,121 @@ test_anova <- anova(test_mod)
 test_anova[1,"Sum Sq"]/test_anova["Residuals", "Sum Sq"]
 getSNR(test_mod) # should be the same as above
 
-### get model coefficients and model test results
-getPolyCoefficients <- function(.mod, .null_mod) {
-  coefs <- coefficients(.mod)
-  coef_names <- c("Intercept", paste0("coef", 1:(length(coefs) - 1)))
-  # likelihood ratio test of model fit
-  full_lik <- logLik(.mod)
-  null_lik <- logLik(.null_mod)
-  lrt_stat <- -2 * (as.numeric(null_lik)-as.numeric(full_lik))
-  lrt_pval <- pchisq(lrt_stat, df = 1, lower.tail = FALSE)
-  # formatting data for output as one row of tibble
-  outdf <- tibble(name = coef_names,
-                  value = as.numeric(coefs)) |> 
-    pivot_wider(names_from = "name", values_from = "value")
-  outdf$lrt_pval <- lrt_pval
-  return(outdf)
-}
-# tests for getPolyCoefficients
-test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
-test_mod <- fitModel(.counts_vec = test_data$counts, 
-                     .hour_vec = test_data$hour,
-                     .degree = 3)
-test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
-                              .hour_vec = test_data$hour)
-getPolyCoefficients(.mod = test_mod, .null_mod = test_null_mod) |> t()
-
 #### Calculating Signal to Noise ####
 # dataframe of modeling results for each gene in each environment
-modeldf <- map2(clustdf$gene_name, clustdf$environment,
+modeldf <- map2(longdf$gene_name, longdf$environment,
                 \(g, e) {
-                  cat(which(paste(g, e) == paste(clustdf$gene_name, clustdf$environment)),
-                      "/", nrow(clustdf), "\n")
-                  e_degree <- if_else(e == "oog",
-                                      true = 2, false = 3) # Oog only has 3 time categories, polynomial can only be degree 2
+                  cat(which(paste(g, e) == paste(longdf$gene_name, longdf$environment)),
+                      "/", nrow(longdf), "\n")
                   g_data <- getData(.gene = g, .environment = e)
-                  mod <- fitModel(.counts_vec = g_data$counts,
-                                  .hour_vec = g_data$hour,
-                                  .degree = e_degree)
-                  null_mod <- fitNullModel(.counts_vec = g_data$counts,
-                                           .hour_vec = g_data$hour)
-                  snr <- getSNR(mod)
-                  coefdf <- getPolyCoefficients(.mod = mod, .null_mod = null_mod)
+                  # SNR with 4 different values of smoothing parameter, df
+                  mod2 <- fitSplineModel(.counts_vec = g_data$counts,
+                                         .hour_vec = g_data$hour,
+                                         .degree = 2)
+                  mod4 <- fitSplineModel(.counts_vec = g_data$counts,
+                                         .hour_vec = g_data$hour,
+                                         .degree = 4)
+                  mod6 <- fitSplineModel(.counts_vec = g_data$counts,
+                                         .hour_vec = g_data$hour,
+                                         .degree = 6)
+                  mod8 <- fitSplineModel(.counts_vec = g_data$counts,
+                                         .hour_vec = g_data$hour,
+                                         .degree = 8)
+                  # null_mod <- fitNullModel(.counts_vec = g_data$counts,
+                  #                          .hour_vec = g_data$hour)
+                  snr2 <- getSNR(mod2)
+                  snr4 <- getSNR(mod4)
+                  snr6 <- getSNR(mod6)
+                  snr8 <- getSNR(mod8)
+                  #coefdf <- getPolyCoefficients(.mod = mod, .null_mod = null_mod)
                   outdf <- tibble("gene_name" = g, "environment" = e,
-                                  "signal_to_noise" = snr) |> 
-                    bind_cols(y = coefdf)
+                                  "signal_to_noise2" = snr2,
+                                  "signal_to_noise4" = snr4,
+                                  "signal_to_noise6" = snr6,
+                                  "signal_to_noise8" = snr8) #|> 
+                    #bind_cols(y = coefdf)
                   return(outdf)
                 }) |> purrr::reduce(.f = bind_rows)
 
-# checking for missing values
-sum(is.na(modeldf$signal_to_noise))
-# adding modeling results to clustdf ()
-clustdf <- left_join(clustdf, modeldf, by = c("gene_name", "environment"))
+# (The warnings are about F tests, which we don't use, so ignoring these)
 
-sort(clustdf$signal_to_noise, decreasing = TRUE)[1:10] # some major outliers with huge SNR
-sort(clustdf$signal_to_noise, decreasing = FALSE)[1:20] # some major outliers, all in "Other" category
-plotdf <- filter(clustdf, signal_to_noise < 1e30)
-plotdf$williams_category <- factor(plotdf$williams_category,
+# checking for missing values
+sum(is.na(modeldf$signal_to_noise8))
+# adding modeling results to longdf ()
+longdf <- left_join(longdf, modeldf, by = c("gene_name", "environment"))
+
+sort(longdf$signal_to_noise4, decreasing = TRUE)[1:10] # some major outliers with huge SNR
+sort(longdf$signal_to_noise4, decreasing = FALSE)[1:20] # some major outliers, all in "Other" category
+plotdf <- longdf |> pivot_longer(cols = c("signal_to_noise2", "signal_to_noise4",
+                                          "signal_to_noise6", "signal_to_noise8"),
+                                 names_to = "smoothness",
+                                 values_to = "signal_to_noise",
+                                 names_prefix = "signal_to_noise")
+plotdf$Plei_allImmune_allDev[is.na(plotdf$Plei_allImmune_allDev)] <- "Other"
+plotdf$williams_category <- factor(plotdf$Plei_allImmune_allDev,
                                    levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic",
                                               "Pleiotropic", "Other"),
                                    labels = c("Developmental", "Immune",
                                               "Pleiotropic", "Neither"))
 group_colors <- c("Developmental"="#E41A1CFF",
                   "Immune"="#377EB8FF",
-                  "Pleiotropic"="#984EA3FF",
-                  "Neither"="#4DAF4AFF")
-p <- ggplot(plotdf, aes(x = williams_category, y = log2(signal_to_noise + 1e-10))) +
-  #geom_jitter(aes(color = williams_category)) +
+                  "Pleiotropic"="#4DAF4AFF",
+                  "Neither"="grey80")
+p <- ggplot(filter(plotdf, williams_category != "Neither"),
+            aes(x = williams_category, y = log2(signal_to_noise + 1e-10))) +
   geom_violin(aes(fill = williams_category, group = williams_category)) +
   stat_summary(fun = "mean", geom = "point") +
-  geom_hline(data = summarise(group_by(filter(plotdf, williams_category == "Neither"),
-                                       environment), meanSNR = mean(log2(signal_to_noise + 1e-10))),
-             aes(yintercept = meanSNR)) +
-  stat_compare_means(comparisons = list(c("Developmental", "Neither"),
-                                        c("Immune", "Neither"),
-                                        c("Pleiotropic", "Neither"))) +
-  #scale_fill_brewer(type = "qual", palette = "Set1") +
+  # geom_hline(data = summarise(group_by(filter(plotdf, williams_category == "Neither"),
+  #                                      environment), 
+  #                             meanSNR = mean(log2(signal_to_noise + 1e-10))),
+  #            aes(yintercept = meanSNR)) +
+  # stat_compare_means(comparisons = list(c("Developmental", "Neither"),
+  #                                       c("Immune", "Neither"),
+  #                                       c("Pleiotropic", "Neither"))) +
   scale_fill_manual(values = group_colors) +
   theme_classic() +
-  facet_wrap(~factor(environment, levels = c("dev", "immune", "oog"), 
-                     labels = c("Embryonic Development", "Imd Challenge", "Oogenesis"))) +
+  facet_grid(smoothness ~ factor(environment, 
+                     levels = c("dev", "immune"), 
+                     labels = c("Embryonic Development", "Imd Challenge"))) +
   xlab("gene category") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-        legend.position = "none") +
-  ylim(c(-10, log2(max(plotdf$signal_to_noise)) + 14))
+        legend.position = "none")
 p
 # pdf("figures/violin.pdf", width = 5, height = 3.5)
 # p
 # dev.off()
 
+#### creating data frame where each gene has 1 row ####
+longdf$williams_category <- factor(longdf$Plei_allImmune_allDev,
+                                   levels = c("Developmental_Non_Pleiotropic", "Immune_Non_Pleiotropic",
+                                              "Pleiotropic", "Other"),
+                                   labels = c("Developmental", "Immune",
+                                              "Pleiotropic", "Neither"))
+
+genedf <- longdf |> 
+  select(gene_name, environment, signal_to_noise2, signal_to_noise4,
+         signal_to_noise6, signal_to_noise8, williams_category) |> 
+  pivot_wider(id_cols = c("gene_name", "williams_category"),
+              names_from = "environment",
+              values_from = c("signal_to_noise6"),
+              names_prefix = "signal_to_noise_") |> 
+  # if a gene is missing/below expression threshold for a dataset, 
+  # we set it to SNR = 0 instead of NA so that the fact 
+  # that it is lowly expressed in that environment is not ignored
+  mutate(signal_to_noise_immune = coalesce(signal_to_noise_immune, 0), 
+         signal_to_noise_dev = coalesce(signal_to_noise_dev, 0))
+
+longdf <- select(longdf, -Plei_allImmune_allDev)
+
+#### saving ####
+save(genedf, longdf, file = "data/SignalToNoise.RData")
+
+
+############# Probably Archive, exploratory stuff that is better to put in other scripts ##############
 #### Inspecting individual genes ####
 # looking at our massive outliers
 # high outliers
-test_highSNR_df <- clustdf |> arrange(desc(signal_to_noise)) |> 
+test_highSNR_df <- longdf |> arrange(desc(signal_to_noise)) |> 
   slice_head(n = 10) |> 
   select(all_of(c("gene_name", "environment")))
 test_highSNR_df$environment |> table() # oog
@@ -258,7 +351,7 @@ counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[4],]
 counts$oog[counts$oog$gene_name == test_highSNR_df$gene_name[7],]
 
 # low outliers
-test_lowSNR_df <- clustdf |> arrange(signal_to_noise) |> 
+test_lowSNR_df <- longdf |> arrange(signal_to_noise) |> 
   slice_head(n = 10) |> 
   select(all_of(c("gene_name", "environment")))
 test_lowSNR_df$environment |> table() # oog
@@ -278,50 +371,6 @@ counts$oog[counts$oog$gene_name == test_idxs[9],] # pick any one that looks like
 # is worth incorporating info on mean expression of each gene b/c the low expression
 # genes that just happen to have low variation between replicates can have a very high SNR
 
-#### Calculating mean expression ####
-clustdf$mean <- map2(clustdf$gene_name, clustdf$environment,
-                     \(g, e) {
-                       g_data <- getData(.gene = g, .environment = e)
-                       return(mean(g_data$counts))
-                     }) |> unlist() # takes a moment
-
-# makes SNR be between 0 and 1
-normalizeSNR <- function(.snr_vec) {
-  min_snr <- min(.snr_vec)
-  out_vec <- .snr_vec + (0 - min_snr)
-  new_max_snr <- max(out_vec)
-  out_vec <- out_vec/new_max_snr
-  return(out_vec)
-}
-# tests for normalizeSNR
-test_devdf <- clustdf |> filter(mean >= 10 & 
-                                  signal_to_noise < 100 &
-                                  environment == "dev")
-test_normSNR <- normalizeSNR(test_devdf$signal_to_noise)
-quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
-test_immunedf <- clustdf |> filter(mean >= 10 & 
-                                     signal_to_noise < 100 &
-                                     environment == "immune")
-test_normSNR <- normalizeSNR(test_immunedf$signal_to_noise)
-quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
-# TODO: if we do this, probably not good to do a linear scale, everything gets piled
-# up at the 99th percentile
-# (currently we're doing dense_rank instead of normalizing)
-
-#### creating data frame where each gene has 1 row ####
-genedf <- clustdf |> 
-  select(gene_name, environment, signal_to_noise, williams_category, mean) |> 
-  pivot_wider(id_cols = c("gene_name", "williams_category"),
-              names_from = "environment",
-              values_from = c("signal_to_noise", "mean")) |> 
-  # if a gene is missing/below expression threshold for a dataset, 
-  # we set it to mean = 0 and SNR = 0 instead of NA
-  mutate(signal_to_noise_immune = coalesce(signal_to_noise_immune, 0), 
-         signal_to_noise_dev = coalesce(signal_to_noise_dev, 0),
-         signal_to_noise_oog = coalesce(signal_to_noise_oog, 0),
-         mean_immune = coalesce(mean_immune, 0),
-         mean_dev = coalesce(mean_dev, 0),
-         mean_oog = coalesce(mean_oog, 0))
 # ranking SNR so it is comparable between datasets
 nGenes <- nrow(genedf)
 genedf$immune_rank <- dplyr::dense_rank(desc(genedf$signal_to_noise_immune)) # highest SNR = 1st rank
@@ -362,15 +411,8 @@ genedf$max_snr <- map(c(1:nrow(genedf)), \(i) {
   return(c("immune", "dev", "oog")[which.min(rank_vec)])
 }) |> unlist()
 
-# does the gene have variable expression in the conditions(s) where it plays a role?
-# Developmental_Non_Pleiotropic: Embryonic Development or Oogenesis
-# Immune_Non_Pleiotropic: Imd Challenge
-# PLeiotropic: (Embryonic Development or Oogenesis) AND Imd Challenge
-
-#### saving ####
-save(clustdf, genedf, SNR_thresh, file = "data/SignalToNoise.RData")
-
 ###################### Exploration ###################### 
+# TODO: Haven't updated this code for using multiple SNR smoothing thresholds yet, or not using OOG
 #### 3D scatterplot of SNR ranks in each dataset ####
 plotdf <- clustdf |> # filter(mean >= 10 & signal_to_noise < 100) |> 
   filter(williams_category != "Other") |>
@@ -683,6 +725,84 @@ plotExpressionProfileWithPolynomial(.counts = counts$immune,
 
 
 ################ Archive ################ 
+# ### fits a null model where time is not a predictor, for likelihood ratio test
+# Archived b/c the LRT doesn't tell us anything that the SNR doesn't tell us
+# The two are monotonically related, most likely because they are both ratios of
+# simple models to more complex ones. The null model denominator for the LRT is simply an intercept
+# so it will be 100% residual. SNR noise denominator is the residual variance after
+# fitting a model. So it's smaller residuals, but extremely related to the null model.
+# fitNullModel <- function(.counts_vec, .hour_vec) {
+#   x <- data.frame(count = .counts_vec,
+#                   hour = .hour_vec)
+#   mod <- lm(count ~ 1, data = x)
+#   return(mod)
+# }
+# # tests for fitNullModel
+# test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+# test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
+#                               .hour_vec = test_data$hour)
+# test_full_lik <- logLik(test_mod)
+# test_null_lik <- logLik(test_null_mod)
+# test_lrt_stat <- -2 * (as.numeric(test_null_lik)-as.numeric(test_full_lik)) # why scale by -2? No idea but it makes it a chisq distributed stat: https://api.rpubs.com/tomanderson_34/lrt
+# pchisq(test_lrt_stat, df = 1, lower.tail = FALSE)
+# ### get model coefficients and model test results
+# getPolyCoefficients <- function(.mod, .null_mod) {
+#   coefs <- coefficients(.mod)
+#   coef_names <- c("Intercept", paste0("coef", 1:(length(coefs) - 1)))
+#   # likelihood ratio test of model fit
+#   full_lik <- logLik(.mod)
+#   null_lik <- logLik(.null_mod)
+#   lrt_stat <- -2 * (as.numeric(null_lik)-as.numeric(full_lik))
+#   lrt_pval <- pchisq(lrt_stat, df = 1, lower.tail = FALSE)
+#   # formatting data for output as one row of tibble
+#   outdf <- tibble(name = coef_names,
+#                   value = as.numeric(coefs)) |> 
+#     pivot_wider(names_from = "name", values_from = "value")
+#   outdf$lrt_pval <- lrt_pval
+#   return(outdf)
+# }
+# # tests for getPolyCoefficients
+# test_data <- getData(.gene = "FBgn0034329", .environment = "immune") # Bomanin Short 1
+# test_mod <- fitGlobalPolynomialModel(.counts_vec = test_data$counts, 
+#                                      .hour_vec = test_data$hour,
+#                                      .degree = 3)
+# test_null_mod <- fitNullModel(.counts_vec = test_data$counts, 
+#                               .hour_vec = test_data$hour)
+# getPolyCoefficients(.mod = test_mod, .null_mod = test_null_mod) |> t()
+
+
+# #### Calculating mean expression ####
+# Archived b/c we tend to either not compare SNR between datasets or use dense_rank
+# to compare SNR between datasets
+# clustdf$mean <- map2(clustdf$gene_name, clustdf$environment,
+#                      \(g, e) {
+#                        g_data <- getData(.gene = g, .environment = e)
+#                        return(mean(g_data$counts))
+#                      }) |> unlist() # takes a moment
+# 
+# # makes SNR be between 0 and 1
+# normalizeSNR <- function(.snr_vec) {
+#   min_snr <- min(.snr_vec)
+#   out_vec <- .snr_vec + (0 - min_snr)
+#   new_max_snr <- max(out_vec)
+#   out_vec <- out_vec/new_max_snr
+#   return(out_vec)
+# }
+# # tests for normalizeSNR
+# test_devdf <- clustdf |> filter(mean >= 10 & 
+#                                   signal_to_noise < 100 &
+#                                   environment == "dev")
+# test_normSNR <- normalizeSNR(test_devdf$signal_to_noise)
+# quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
+# test_immunedf <- clustdf |> filter(mean >= 10 & 
+#                                      signal_to_noise < 100 &
+#                                      environment == "immune")
+# test_normSNR <- normalizeSNR(test_immunedf$signal_to_noise)
+# quantile(test_normSNR, probs = c(0, 0.25, 0.5, 0.75, 0.9, 0.95, 1))
+# # TODO: if we do this, probably not good to do a linear scale, everything gets piled
+# # up at the 99th percentile
+# # (currently we're doing dense_rank instead of normalizing)
+
 #### Ternary Plot ####
 # Archived b/c I didn't realize that by definition in 
 # Ternary plots, you can't be high in 2/3 variables --- 
