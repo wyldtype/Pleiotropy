@@ -63,21 +63,19 @@ plotdf <- genedf |>
   mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0),
          nEnhancers_HKSM_only = coalesce(nEnhancers_HKSM_only, 0),
          nEnhancers_s2_constit = coalesce(nEnhancers_s2_constit, 0)) |> 
-  left_join(y = HOGdf |> select(Dmel_FBgnID, OG_cons, nOG, nOG_dmel),
+  left_join(y = HOGdf,
             by = c("gene_name"="Dmel_FBgnID")) |> 
-  mutate(gene_family_expanded = nOG_dmel < nOG,
-         hasEnhancers = nEnhancers_dev > 0 | nEnhancers_HKSM_only > 0 | nEnhancers_s2_constit,
+  mutate(hasEnhancers = nEnhancers_dev > 0 | nEnhancers_HKSM_only > 0 | nEnhancers_s2_constit,
          hasEnhancers_dev = nEnhancers_dev > 0,
          hasEnhancers_HKSM_only = nEnhancers_HKSM_only > 0,
          hasEnhancers_s2_constit = nEnhancers_s2_constit > 0,
          williams_code = dense_rank(williams_category), # 1 = dev, 2 = immune, 3 = plei
          variability_code = dense_rank(variability)) |> # 1 = var_both, 2 = var_dev, 3 = var_immune, 4 = var_neither
-  filter(!is.na(gene_family_expanded)) |> 
-  arrange(hasEnhancers, gene_family_expanded, williams_code)
+  arrange(hasEnhancers, low_copy_2, low_copy_5, low_copy_10, williams_code)
 
 # heatmap matrix
 plot_mat <- plotdf |> select(variability_code,
-                             gene_family_expanded,
+                             low_copy_2, low_copy_5, low_copy_10,
                              hasEnhancers) |> 
   as.matrix()
 rownames(plot_mat) <- plotdf$gene_name
@@ -91,14 +89,20 @@ pheatmap(plot_mat*1, cluster_cols = FALSE, cluster_rows = TRUE,
 # pretty wild un-enrichment of enhancers among gene family expansions
 # Is that significant unenrichment?
 plotdf |> group_by(hasEnhancers, 
-                   gene_family_expanded) |> 
-  summarise(n = n()) # input that to fisher test, couldn't be less significant
+                   low_copy_2) |> 
+  summarise(n = n()) |> drop_na() |> 
+  pivot_wider(id_cols = 
+                "low_copy_2",
+              names_from = "hasEnhancers",
+              values_from = "n")
+# Low copy genes are slightly enriched for more enhancers, 
+# only significant at min nSpecies = 2
 
 #### do gene family expansions have higher SNR? ####
 
 ### SNR, dev
 # anova, yes gene family expansion
-datadf <- filter(plotdf, gene_family_expanded & signal_to_noise_dev > 0) |> 
+datadf <- filter(plotdf, low_copy_5 & signal_to_noise_dev > 0) |> 
   mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
          isImmune = williams_category == "Immune_Non_Pleiotropic",
          isOther = williams_category == "Other",
@@ -108,7 +112,7 @@ mod <- glm(signal_to_noise_dev ~ isPlei, #+ isDev + isImmune + isOther,
                   family = Gamma(link = "log"))
 anova(mod)
 # anova, no gene family expansion
-datadf <- filter(plotdf, !gene_family_expanded & signal_to_noise_dev > 0) |> 
+datadf <- filter(plotdf, !low_copy_5 & signal_to_noise_dev > 0) |> 
   mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
          isImmune = williams_category == "Immune_Non_Pleiotropic",
          isOther = williams_category == "Other",
@@ -119,7 +123,7 @@ mod <- glm(signal_to_noise_dev ~ isPlei, #+ isDev + isImmune + isOther,
 anova(mod)
 # boxplot
 p_devSNR <- ggplot(filter(plotdf, signal_to_noise_dev > 0), 
-                   aes(x = gene_family_expanded, 
+                   aes(x = low_copy_5, 
                        y = log2(signal_to_noise_dev))) +
   geom_boxplot(aes(fill = factor(williams_category,
                                  levels = c("Other", 
@@ -135,7 +139,7 @@ p_devSNR
 
 ### SNR, immune
 # anova, yes gene family expansion
-datadf <- filter(plotdf, gene_family_expanded & signal_to_noise_immune > 0) |> 
+datadf <- filter(plotdf, low_copy_2 & signal_to_noise_immune > 0) |> 
   mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
          isImmune = williams_category == "Immune_Non_Pleiotropic",
          isOther = williams_category == "Other",
@@ -145,7 +149,7 @@ mod <- glm(signal_to_noise_immune ~ isPlei, #+ isDev + isImmune + isOther,
            family = Gamma(link = "log"))
 anova(mod) # should be significant
 # anova, no gene family expansion
-datadf <- filter(plotdf, !gene_family_expanded & signal_to_noise_immune > 0) |> 
+datadf <- filter(plotdf, !low_copy_2 & signal_to_noise_immune > 0) |> 
   mutate(isDev = williams_category == "Developmental_Non_Pleiotropic",
          isImmune = williams_category == "Immune_Non_Pleiotropic",
          isOther = williams_category == "Other",
@@ -155,8 +159,8 @@ mod <- glm(signal_to_noise_immune ~ isPlei, #+ isDev + isImmune + isOther,
            family = Gamma(link = "log"))
 anova(mod) # shouldn't be significant
 # boxplot
-p_immuneSNR <- ggplot(filter(plotdf, signal_to_noise_immune > 0), 
-                   aes(x = gene_family_expanded, 
+p_immuneSNR <- ggplot(filter(drop_na(plotdf), signal_to_noise_immune > 0), 
+                   aes(x = low_copy_2, 
                        y = log2(signal_to_noise_immune))) +
   geom_boxplot(aes(fill = factor(williams_category,
                                  levels = c("Other", 

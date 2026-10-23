@@ -49,26 +49,26 @@ imm_gene <- getFlyBaseID("glob1")
 dev_gene <- getFlyBaseID("fkh")
 plei_gene <- getFlyBaseID("Rap1")
 # corresponding SNRs
-imm_gene_title <- paste("globin 1, SNR_imd =", 
+imm_gene_title <- paste("globin 1\nSNR_imd =", 
                         round(genedf$signal_to_noise_immune[genedf$gene_name == imm_gene], digits = 2),
-                        "SNR_dev =", 
+                        "\nSNR_dev =", 
                         round(genedf$signal_to_noise_dev[genedf$gene_name == imm_gene], digits = 2))
-dev_gene_title <- paste("forkhead, SNR_imd =", 
+dev_gene_title <- paste("forkhead\nSNR_imd =", 
                         round(genedf$signal_to_noise_immune[genedf$gene_name == dev_gene], digits = 2),
-                        "SNR_dev =", 
+                        "\nSNR_dev =", 
                         round(genedf$signal_to_noise_dev[genedf$gene_name == dev_gene], digits = 2))
-plei_gene_title <- paste("Rap1, SNR_imd =", 
+plei_gene_title <- paste("Rap1\nSNR_imd =", 
                         round(genedf$signal_to_noise_immune[genedf$gene_name == plei_gene], digits = 2),
-                        "SNR_dev =", 
+                        "\nSNR_dev =", 
                         round(genedf$signal_to_noise_dev[genedf$gene_name == plei_gene], digits = 2))
 
 # plot for poster
-ggarrange(plotlist = plotExpressionProfileAllEnvironments(.gene_idxs = c(imm_gene, dev_gene, pleiImm_gene), 
+ggarrange(plotlist = plotExpressionProfileAllEnvironments(.gene_idxs = c(imm_gene, dev_gene, plei_gene), 
                                      .gene_names = c(imm_gene_title, dev_gene_title, plei_gene_title),
                                      .environments = c("dev", "immune"),
                                      .color_vec = c(immune_color, dev_color, plei_color)),
           nrow = 2, ncol = 1, legend = "none")
-ggsave(filename = "figures/example_SNRs.png", width = 10, height = 7)
+ggsave(filename = "figures/example_SNRs.png", width = 5.5, height = 4.5)
 
 ### Plots to match Williams et al. pathways figure
 # # Williams et al. colors

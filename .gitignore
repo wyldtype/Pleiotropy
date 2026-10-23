@@ -64,3 +64,4 @@ rsconnect/
 # bibliography files
 *.bib
 *.rtf
+.positai

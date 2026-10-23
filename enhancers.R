@@ -1,6 +1,15 @@
 sapply(c("tidyr", "dplyr", "ggplot2", "ggpubr", "ggalluvial", "purrr", "readxl", "readr", "stringr", "plotly", "lmtest", "pheatmap"), FUN = require,
        character.only = TRUE)
 
+# TODO: Zeba's idea: make nEnhancers per gene histograms
+# Except with the three gene groups separated
+# The idea is that immune genes are probably targeted by
+# The fewest enhancers per gene (I haven't looked at this because
+# Collapsing each enhancer-gene observation to a binary of
+# "targeted by at least one enhancer"
+# Hides differences in how many enhancers)
+
+
 # loading counts and functions
 source("utils.r")
 source("global.r")
@@ -293,19 +302,35 @@ plotdf <- bind_rows(x = mutate(nEnhancerdf, assignment = "published"),
 
 # enhancers per gene histograms
 # published
-plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions)
+plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions) |> 
+  left_join(select(genedf, gene_name, williams_category), by = c("FlyBaseID"="gene_name")) |> 
+  drop_na() |> 
+  filter(williams_category != "Other")
 p_pub <- ggplot(plotdf,
        aes(x = nEnhancers)) +
-  geom_bar(stat = "count", color = "black", fill = "grey80") +
-  facet_wrap(~factor(condition, 
+  geom_bar(stat = "count", aes(fill = factor(williams_category,
+                                             levels = c("Developmental_Non_Pleiotropic",
+                                                        "Immune_Non_Pleiotropic",
+                                                        "Pleiotropic",
+                                                        "Other"),
+                                             labels = c("Developmental, non-pleiotropic",
+                                                        "Immune, non-pleiotropic",
+                                                        "Pleiotropic",
+                                                        "All other expressed genes")))) +
+  scale_fill_manual(values = c("Developmental, non-pleiotropic"="#F8766D",
+                               "Pleiotropic"="#619CFF",
+                               "Immune, non-pleiotropic"="#00BA38",
+                               "All other expressed genes"="grey80")) +
+  facet_grid(factor(condition, 
                      levels = enhancer_conditions,
-                     labels = enhancer_labels)) +
+                     labels = enhancer_labels) ~ williams_category) +
   scale_x_continuous(labels = seq(from = 1, to = max(plotdf$nEnhancers), by = 2),
                      breaks = seq(from = 1, to = max(plotdf$nEnhancers), by = 2)) +  
   xlab("enhancers per gene") +
   ylab("number of genes") +
   theme_classic() +
-  ggtitle("Published enhancer assignments")
+  ggtitle("Published enhancer assignments") +
+  theme(legend.position = "none")
 # midpoints
 plotdf <- QC_nEnhancerdf |> 
   mutate(condition = gsub("midpoints_", "", condition)) |> 
@@ -331,13 +356,15 @@ ggsave(filename = "figures/nEnhancers.png",
 # published
 # TODO: I lost steam on this, but this is mostly copy-pasted code from
 # the enhancers per gene part. Gotta get the enhancer names in each condition from enhancerdf_Cohen/Kvon
-plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions)
+plotdf <- nEnhancerdf |> filter(condition %in% enhancer_conditions) |> 
+  left_join(select(genedf, gene_name, williams_category), by = c("FlyBaseID"="gene_name"))
 p_pub <- ggplot(plotdf,
                 aes(x = nEnhancers)) +
   geom_bar(stat = "count", color = "black", fill = "grey80") +
   facet_wrap(~factor(condition, 
                      levels = enhancer_conditions,
                      labels = enhancer_labels)) +
+  #facet_wrap(~williams_category) +
   scale_x_continuous(labels = seq(from = 1, to = max(plotdf$nEnhancers), by = 2),
                      breaks = seq(from = 1, to = max(plotdf$nEnhancers), by = 2)) +  
   xlab("genes per enhancer") +
@@ -486,14 +513,24 @@ plotdf_pcts <- genedf |> select(gene_name, williams_category) |>
   summarise(n_with_enhancer = sum(nEnhancers > 0),
             n = n(),
             pct_with_enhancer = (n_with_enhancer/n)*100)
+plotdf_pcts$williams_category <- factor(plotdf_pcts$williams_category,
+                                        levels = c("Developmental_Non_Pleiotropic",
+                                                   "Pleiotropic",
+                                                   "Immune_Non_Pleiotropic",
+                                                   "Other"),
+                                        labels = c("Developmental, non-pleiotropic",
+                                                   "Pleiotropic",
+                                                   "Immune, non-pleiotropic",
+                                                   "All other expressed genes"))
 
 ggplot(plotdf_pcts, aes(x = williams_category, y = pct_with_enhancer/100)) +
-  geom_bar(aes(fill = williams_category), stat = "identity") +
+  geom_bar(aes(fill = williams_category), 
+           stat = "identity") +
   theme_classic() +
-  scale_fill_manual(values = c("Developmental_Non_Pleiotropic"="#F8766D",
+  scale_fill_manual(values = c("Developmental, non-pleiotropic"="#F8766D",
                                "Pleiotropic"="#619CFF",
-                               "Immune_Non_Pleiotropic"="#00BA38",
-                               "Other"="grey80")) +
+                               "Immune, non-pleiotropic"="#00BA38",
+                               "All other expressed genes"="grey80")) +
   facet_wrap(~factor(condition, levels = enhancer_conditions,
                      labels = enhancer_labels)) +
   ylab("fraction of genes with\nat least one enhancer") +
@@ -517,14 +554,23 @@ plotdf_pcts <- genedf |> select(gene_name, williams_category) |>
   summarise(n_with_enhancer = sum(nEnhancers > 0),
             n = n(),
             pct_with_enhancer = (n_with_enhancer/n)*100)
+plotdf_pcts$williams_category <- factor(plotdf_pcts$williams_category,
+                                        levels = c("Developmental_Non_Pleiotropic",
+                                                   "Pleiotropic",
+                                                   "Immune_Non_Pleiotropic",
+                                                   "Other"),
+                                        labels = c("Developmental, non-pleiotropic",
+                                                   "Pleiotropic",
+                                                   "Immune, non-pleiotropic",
+                                                   "All other expressed genes"))
 
 ggplot(plotdf_pcts, aes(x = williams_category, y = pct_with_enhancer/100)) +
   geom_bar(aes(fill = williams_category), stat = "identity") +
   theme_classic() +
-  scale_fill_manual(values = c("Developmental_Non_Pleiotropic"="#F8766D",
+  scale_fill_manual(values = c("Developmental, non-pleiotropic"="#F8766D",
                                "Pleiotropic"="#619CFF",
-                               "Immune_Non_Pleiotropic"="#00BA38",
-                               "Other"="grey80")) +
+                               "Immune, non-pleiotropic"="#00BA38",
+                               "All other expressed genes"="grey80")) +
   facet_wrap(~factor(condition, levels = enhancer_conditions,
                      labels = enhancer_labels)) +
   ylab("fraction of genes with\nat least one enhancer") +
@@ -590,7 +636,7 @@ plotdf <- genedf |> filter(williams_category != "Other") |>
   dplyr::rename(c("nEnhancers_dev" = "nEnhancers")) |> 
   mutate(nEnhancers_dev = coalesce(nEnhancers_dev, 0)) |> 
   left_join(nEnhancerdf_hksm,
-            by = c("gene_name"="Gene")) |> 
+            by = c("gene_name"="FlyBaseID")) |> 
   dplyr::rename(c("nEnhancers_hksm" = "nEnhancers")) |> 
   mutate(nEnhancers_hksm = coalesce(nEnhancers_hksm, 0)) |> 
   mutate(hasEnhancers_dev = if_else(nEnhancers_dev > 0,
@@ -868,7 +914,8 @@ sum((enhancerdf_closest_dev$Enhancer %in% all_enhancers_kvon))
 sum(!(enhancerdf_closest_dev$Enhancer %in% all_enhancers_kvon)) # should be 0
 setdiff(all_enhancers_kvon, enhancerdf_closest_dev$Enhancer)[1:10]
 
-# counting nEnhancers per gene
+# counting nEnhancers per gene, per williams category
+
 # HKSM-only
 nEnhancerdf_closestHKSM <- enhancerdf_closestHKSM |> 
   group_by(FlyBaseID) |> 
